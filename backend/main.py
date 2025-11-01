@@ -2,7 +2,7 @@ from fastapi import FastAPI
 
 from .graph.graph_analyser import GraphAnalyser
 from .graph.graph_builder import GraphBuilder
-from .scrapers import news_scraper, reddit_scraper
+from .scrapers import news_scraper, reddit_scraper_sub
 from .synthesis.cluster import Clusterer
 
 app = FastAPI()
@@ -19,7 +19,7 @@ def process_topic(topic: str):
     builds a graph, analyzes it, and returns the clustered data and graph.
     """
     # Scrape Reddit
-    reddit_posts = reddit_scraper.scrape_subreddit(topic, limit=10)
+    reddit_posts = reddit_scraper_sub.scrape_subreddit(topic, limit=10)
 
     # Scrape News (using a placeholder for now)
     news_article = news_scraper.scrape_article('https://simple.wikipedia.org/wiki/Python_(programming_language)')
