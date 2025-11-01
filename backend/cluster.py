@@ -1,7 +1,7 @@
 
 from sentence_transformers import SentenceTransformer
 import numpy as np
-from sklearn.cluster import KMeans
+import hdbscan
 
 class Clusterer:
     def __init__(self, model_name='all-MiniLM-L6-v2'):
@@ -25,20 +25,19 @@ class Clusterer:
         """
         return self.model.encode(texts)
 
-    def cluster_embeddings(self, embeddings, num_clusters):
+    def cluster_embeddings(self, embeddings):
         """
-        Clusters a set of embeddings using k-means clustering from scikit-learn.
+        Clusters a set of embeddings using HDBSCAN clustering.
 
         Args:
             embeddings: A numpy array of vector embeddings.
-            num_clusters: The number of clusters to create.
 
         Returns:
             A list of cluster assignments for each embedding.
         """
-        kmeans = KMeans(n_clusters=num_clusters, random_state=0)
-        kmeans.fit(embeddings)
-        return kmeans.labels_.tolist()
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=2, gen_min_span_tree=True)
+        clusterer.fit(embeddings)
+        return clusterer.labels_.tolist()
 
 if __name__ == '__main__':
     # Example usage:
@@ -89,8 +88,7 @@ if __name__ == '__main__':
     ]
     embeddings = clusterer.create_embeddings(texts)
     
-    num_clusters = 5
-    cluster_assignments = clusterer.cluster_embeddings(embeddings, num_clusters)
+    cluster_assignments = clusterer.cluster_embeddings(embeddings)
     
     for text, cluster in zip(texts, cluster_assignments):
         print(f'Text: "{text}" -> Cluster: {cluster}')

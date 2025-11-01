@@ -1,6 +1,8 @@
-import requests
 import json
 from urllib.parse import urlparse
+
+import requests
+
 
 def scrape_post(post_url: str):
     """
@@ -53,12 +55,20 @@ def scrape_post(post_url: str):
 
         comments_raw = data[1]['data']['children']
 
-        comments = []
-        for c in comments_raw:
-            # c['kind'] == 't1' means it's a comment, 'more' means "load more"
-            if c.get('kind') == 't1':
-                body = c['data'].get('body', '')
-                comments.append(body)
+        def flatten_comments(comment_tree):
+            comments = []
+            for c in comment_tree:
+                if c.get('kind') == 't1':
+                    body = c['data'].get('body', '')
+                    if body:
+                        comments.append(body)
+
+                    replies = c['data'].get('replies', '')
+                    if replies:
+                        comments.extend(flatten_comments(replies['data']['children']))
+            return comments
+
+        comments = flatten_comments(comments_raw)
 
         return {
             'title': title,
@@ -76,10 +86,4 @@ if __name__ == '__main__':
     # replace this with any reddit post link you want
     url = "https://www.reddit.com/r/Python/comments/1ols60g/solvex_an_open_source_fastapi_scipy_api_im/"
     post_data = scrape_post(url)
-
-    if post_data:
-        print(f"Title: {post_data['title']}\n")
-        print(f"Content: {post_data['content']}\n")
-        print("Comments:")
-        for comment in post_data['comments']:
-            print(f"- {comment}")
+    print(post_data)
