@@ -1,0 +1,15 @@
+Please do the following:
+Create a python script that contain a function that will take a list of strings and generate embeddings for them using sentence_transformers. Then cluster the embeddings using hdbscan. For each cluster, concatenate all the strings under it and generate a summary using an LLM. Generate an embedding for this summary too. The final format of the result should be a like this:
+
+[
+    {
+        summary: str,
+        embedding: <whatever the embedding type is>,
+        [{idea: str, embedding: <embedding type>}, ...]
+    },
+    ...
+]
+
+Return this from the function.
+
+Define an LLM (langchain/langgraph) in llm.py and import this in the clustering code file. Once you do that, please tell me where I should put the API key. Please use OpenAI chat for the LLM.

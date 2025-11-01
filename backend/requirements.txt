@@ -8,3 +8,9 @@ sentence-transformers
 numpy
 scikit-learn
 nltk
+hdbscan
+langchain-openai
+torch
+torchvision
+pandas
+python-dotenv
