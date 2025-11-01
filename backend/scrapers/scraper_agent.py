@@ -1,3 +1,9 @@
+################################################
+# RUN AS A MODULE, NOT AS A PYTHON FILE        #
+# Run command from the AgentVerseHacathon dir: #
+# python -m backend.scrapers.scraper_agent     #
+################################################
+
 import os
 from typing import List, Tuple, Dict, Any, Union
 
