@@ -5,6 +5,7 @@
 We have successfully set up the foundational structure of the Social Trend Analyser project, with a functional backend and a basic frontend. Here's a summary of what has been accomplished:
 
 **Backend (Python & FastAPI):**
+
 - **Project Scaffolding:** Created a clear directory structure for the backend, with separate modules for scraping, synthesis, and graph operations.
 - **FastAPI Server:** Set up a FastAPI server (`main.py`) to handle API requests and orchestrate the backend logic.
 - **Scrapers:**
@@ -21,6 +22,7 @@ We have successfully set up the foundational structure of the Social Trend Analy
   - Created a `/process-topic/{topic}` endpoint that integrates all backend components: it scrapes data, clusters it, builds a graph, and annotates it.
 
 **Frontend (Vue.js):**
+
 - **Project Scaffolding:** Set up a Vue.js project in the `frontend` directory.
 - **Basic UI:** Created a simple user interface in `App.vue` with:
   - An input field for the user to enter a topic.
@@ -38,6 +40,7 @@ The project is at a stage where the backend is fully functional and can be teste
 Here is a suggested division of the remaining work to complete the project:
 
 **1. Frontend Developer:**
+
 - **Primary Task:** Debug and fix the Mermaid.js graph visualization on the frontend.
 - **Secondary Tasks:**
   - Enhance the UI/UX to make it more intuitive and visually appealing.
@@ -45,6 +48,7 @@ Here is a suggested division of the remaining work to complete the project:
   - Add loading indicators and error handling for a better user experience.
 
 **2. Backend Developer (API & Integration):**
+
 - **Primary Task:** Improve and expand the FastAPI backend.
 - **Secondary Tasks:**
   - Add more API endpoints for more granular control (e.g., endpoints to get specific clusters, to query the graph).
@@ -53,6 +57,7 @@ Here is a suggested division of the remaining work to complete the project:
   - Consider adding a WebSocket connection for real-time updates.
 
 **3. Data Scientist/Agent Developer (Clustering & Analysis):**
+
 - **Primary Task:** Enhance the clustering and graph analysis algorithms.
 - **Secondary Tasks:**
   - Experiment with different clustering algorithms (e.g., hierarchical clustering) and embedding models.
@@ -61,6 +66,7 @@ Here is a suggested division of the remaining work to complete the project:
   - Start working on the temporal analysis of trends.
 
 **4. Data Engineer/Agent Developer (Scraping & Data):**
+
 - **Primary Task:** Improve the data scraping and collection process.
 - **Secondary Tasks:**
   - Enhance the scrapers to be more robust and handle different website structures.

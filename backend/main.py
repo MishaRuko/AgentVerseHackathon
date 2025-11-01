@@ -1,15 +1,16 @@
 from fastapi import FastAPI
 
-from .scrapers import reddit_scraper, news_scraper
-from .synthesis.cluster import Clusterer
-from .graph.graph_builder import GraphBuilder
 from .graph.graph_analyser import GraphAnalyser
+from .graph.graph_builder import GraphBuilder
+from .scrapers import news_scraper, reddit_scraper
+from .synthesis.cluster import Clusterer
 
 app = FastAPI()
 
 clusterer = Clusterer()
 graph_builder = GraphBuilder()
 graph_analyser = GraphAnalyser()
+
 
 @app.post("/process-topic/{topic}")
 def process_topic(topic: str):
@@ -24,7 +25,7 @@ def process_topic(topic: str):
     news_article = news_scraper.scrape_article('https://simple.wikipedia.org/wiki/Python_(programming_language)')
 
     # Combine the scraped text
-    all_texts = [post['content'] for post in reddit_posts if post['content']] 
+    all_texts = [post['content'] for post in reddit_posts if post['content']]
     if news_article and news_article['content']:
         all_texts.append(news_article['content'])
 
@@ -48,7 +49,7 @@ def process_topic(topic: str):
 
     # Add a node for the main topic
     graph_builder.add_or_update_node(topic, {"label": topic})
-    
+
     # Annotate clusters with keywords
     current_graph = graph_analyser.annotate_clusters(graph_builder, clustered_data)
 
@@ -59,6 +60,8 @@ def process_topic(topic: str):
 
     return {"clustered_data": clustered_data, "graph": graph_builder.get_graph()}
 
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
