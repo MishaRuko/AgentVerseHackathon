@@ -1,0 +1,136 @@
+# General / OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+Icon?
+.Spotlight-V100/
+.Trashes/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Environment / secrets
+.env
+.env.*
+.env.local
+*.local
+secrets.*
+*.pem
+*.key
+*.crt
+
+# Node
+node_modules/
+.pnp/
+.pnp.js
+.cache/
+dist/
+build/
+.tmp/
+out/
+.next/
+.nuxt/
+.vite/
+.vs/
+*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+build/
+dist/
+python-version
+
+# Packaging / artifacts
+*.egg
+*.whl
+*.tar.gz
+
+# Java / JVM
+target/
+bin/
+*.class
+*.jar
+*.war
+*.ear
+
+# Go
+bin/
+pkg/
+*.exe
+*.exe~
+*.test
+
+# Rust / C / C++
+target/
+Cargo.lock
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.code-workspace
+*.iml
+*.ipr
+*.iws
+
+# Mac / Editor backups
+*~
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
+docker-compose.*.yml
+
+# CI / Coverage
+coverage/
+.coverage
+coverage.xml
+htmlcov/
+.jest/
+test-results.xml
+
+# Databases / data
+*.sqlite3
+*.db
+*.sql
+*.sqlite
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Misc
+.vagrant/
+.idea_modules/
+.npm/
+bower_components/
+jspm_packages/
+.DS_Store
+
+# Ignore build outputs or temporary files created by common tools
+# (Uncomment any additional lines you need for frameworks/tools used in this repo)
