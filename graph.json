@@ -1,0 +1,87 @@
+{
+    "nodes": {
+        "cluster_0": {
+            "id": "cluster_0",
+            "attributes": {
+                "label": "Topic Cluster 0",
+                "keywords": [
+                    "python",
+                    "language",
+                    "would",
+                    "code",
+                    "like"
+                ]
+            }
+        },
+        "cluster_1": {
+            "id": "cluster_1",
+            "attributes": {
+                "label": "Topic Cluster 1",
+                "keywords": [
+                    "python",
+                    "share",
+                    "resource",
+                    "math",
+                    "get"
+                ]
+            }
+        },
+        "cluster_2": {
+            "id": "cluster_2",
+            "attributes": {
+                "label": "Topic Cluster 2",
+                "keywords": [
+                    "email",
+                    "project",
+                    "telegram",
+                    "user",
+                    "bot"
+                ]
+            }
+        },
+        "python": {
+            "id": "python",
+            "attributes": {
+                "label": "python"
+            }
+        }
+    },
+    "edges": [
+        {
+            "source": "python",
+            "target": "cluster_0",
+            "relationship": "contains_data_from",
+            "weight": 1.0
+        },
+        {
+            "source": "python",
+            "target": "cluster_1",
+            "relationship": "contains_data_from",
+            "weight": 1.0
+        },
+        {
+            "source": "python",
+            "target": "cluster_2",
+            "relationship": "contains_data_from",
+            "weight": 1.0
+        },
+        {
+            "source": "python",
+            "target": "cluster_2",
+            "relationship": "contains_data_from",
+            "weight": 1.0
+        },
+        {
+            "source": "python",
+            "target": "cluster_1",
+            "relationship": "contains_data_from",
+            "weight": 1.0
+        },
+        {
+            "source": "python",
+            "target": "cluster_0",
+            "relationship": "contains_data_from",
+            "weight": 1.0
+        }
+    ]
+}

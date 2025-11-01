@@ -1,0 +1,15 @@
+I want to create a project: social trend analyser. Here is a detailed description of the project and how it should be implemented:
+
+Purpose:
+Collect information from various sources (the current focus is on articles and reddit or other text-first social media), cluster posts (possible creates clusters of clusters too), builds a database of clusters and posts, builds a graph of echo chambers/areas/domains/communities and creates intelligently annotated links between them, identifies temporal and social trends, and produces reports about the overall or relevant portions of the graph. The system takes as input a user query for what to research or just builds a graph from a collection of current trends. After the graph and annotations are built, the system accepts user questions and answers them using all the collected data.
+
+Implementation:
+It is suggested that the system is implemented as follows:
+1. A user agent that will interact with the user. It will accept a topic for research (e.g. current human relationship trends, Gen Z trends, etc...) or no topic and it will research just current trends through web search or anything similar. The user agent will also be used to query the graph later.
+2. A source selector agent will come up with a list of potential sources to research (subreddits, news outlets, etc...) and spawn scrapers which will go out and collect relevant data.
+3. The scrapers will pass the scraped content to a synthesising agent which will create topic clusters and clusters of those clusters. It may do this by doing a combination of post summarisation, creating embeddings for posts, and creating a vector database to store similar posts.
+4. The aggregated update generated in the previous state will be passed to a graph builder agent, which will take an existing graph (if it exists) and incorporate the new data into it. There will be some way to visualise this graph (for example, using Mermaid.js or another graph technology). The agent will also produce a change report.
+5. A graph analyser agent will accept the change report and updated graph and make annotations of clusters and make links between clusters and annotate those. We should be able to highlight clusters which are relevant to each other and see explanations for why they are relevant.
+6. The user will be able to interact with the user agent to query the graph, which will be done by the graph analyser. The user may ask questions like "does a link between X and Y exist? How strong is it? Why does the link exist and what is likely to happen in the future to the clusters and links involved?" 
+
+The system must be implemented in Python with LangChain/LangGraph. Ideally, a website should be produced and it should be Vue.js.

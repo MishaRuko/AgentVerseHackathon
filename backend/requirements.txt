@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langchain
+langgraph
+beautifulsoup4
+requests
+sentence-transformers
+numpy
+scikit-learn
+nltk
