@@ -47,6 +47,9 @@ with open("marketing_strategist.yaml", "r") as f:
     _o = yaml.safe_load(f)
     BASE_ORCHESTRATOR_PROMPT = _o["orchestrator"]
 
+with open("system_prompt.yaml", "r") as f:
+    _sys = yaml.safe_load(f)
+    SUPERVISOR_PROMPT = _sys["supervisor"]
 
 # -------------------------------------------------
 # util functions same as before (infer_source_type, google_search)
