@@ -1,110 +1,114 @@
-from strands import Agent, tool
-from strands.models.openai import OpenAIModel
 import json
 import asyncio
 import sys
 import os
-import requests
-from urllib.parse import quote_plus
-from dotenv import load_dotenv
 import re
-from urllib.parse import urlparse
-from datetime import datetime
-import asyncio
+from urllib.parse import quote_plus, urlparse
+from dotenv import load_dotenv
+import yaml
+import requests
 
-# Load environment variables from .env file
+from strands import Agent, tool
+from strands.models.openai import OpenAIModel
+
+# -----------------------------------------
+# ENV / PATH / IMPORTS
+# -----------------------------------------
+
 load_dotenv()
 
-# This script uses the Strands Agents SDK with the "Agents as Tools" pattern.
-# Each specialist (source selector, scraper, vector DB) is implemented as a 
-# separate Agent, then wrapped as a @tool function so the orchestrator can 
-# invoke them. This follows the multi-agent example from Strands documentation.
+sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
-# ============================================
-# CONFIGURE OPENAI MODEL
-# ============================================
+from graph_rag import rag_query
+import backend.scrapers.scraper_agent as WebScraper
+from clustering import cluster_and_summarize
+from graph_builder import build_cluster_graph
 
-# Make sure OPENAI_API_KEY is set in your environment
-# export OPENAI_API_KEY='your-api-key-here'
-
-openai_model = OpenAIModel(
-    model_id="gpt-4o-mini",  # Using gpt-4o-mini for cost efficiency
-    # Alternatively use: "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"
+from personas import (
+    build_marketing_persona_agent,
+    make_marketing_persona_tool,
+    build_finance_persona_agent,
+    make_finance_persona_tool,
 )
 
-# ============================================
-# SYSTEM PROMPTS FOR SPECIALIST AGENTS
-# ============================================
+# -----------------------------------------
+# GLOBAL KB
+# -----------------------------------------
 
-SOURCE_SELECTOR_PROMPT = """
-You are a search query specialist. Your job is to take a user's question and generate 3 different Google search queries that will help find comprehensive information about that topic.
+knowledge_base = {}
 
-Guidelines:
-1. Generate 3 distinct search queries that approach the topic from different angles
-2. Each query should be relevant but explore different aspects of the user's question
-3. Make queries specific and actionable for Google search
-4. Consider using different search modifiers (site:, intitle:, etc.) to get diverse results
-5. Return ONLY a JSON array (no extra text) with exactly 3 search queries:
+# -----------------------------------------
+# MODEL
+# -----------------------------------------
 
-["first search query", "second search query", "third search query"]
+openai_model = OpenAIModel(
+    model_id="gpt-4o-mini",
+)
 
-Example:
-User query: "What are people saying about AI safety?"
-Your response: ["AI safety concerns 2024", "site:reddit.com AI alignment discussion", "artificial intelligence safety research latest"]
+# -----------------------------------------
+# LOAD PROMPTS
+# -----------------------------------------
 
-Be concise and return only valid JSON.
-"""
+with open("agent_prompts.yaml", "r") as f:
+    _p = yaml.safe_load(f)
+    SOURCE_SELECTOR_PROMPT = _p["source_selector"]
+    SCRAPER_PROMPT = _p["scraper"]
+    GRAPH_RAG_PROMPT = _p["graph_rag"]
 
-SCRAPER_PROMPT = """
-You are a web scraping specialist. Given a list of sources (as JSON):
-1. Extract content from each source
-2. Return ONLY a JSON array (no extra text) with this format:
-[
-    {"source": "url", "text": "content...", "metadata": {"type": "..."}}
-]
+with open("system_prompt.yaml", "r") as f:
+    _o = yaml.safe_load(f)
+    ORCHESTRATOR_PROMPT = _o["orchestrator"]
 
-For this demo, simulate scraped content. Return only valid JSON.
-"""
+# -----------------------------------------
+# HELPERS
+# -----------------------------------------
 
-VECTOR_DB_PROMPT = """
-You are a vector database specialist. Given documents (as JSON):
-1. Process and store them in a vector database
-2. Return ONLY a JSON object (no extra text) with this format:
-{
-    "stored": <count>,
-    "ids": ["doc_0", "doc_1", ...]
-}
+def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
+    if not url:
+        return "general"
 
-For this demo, simulate storage. Return only valid JSON.
-"""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    netloc = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    title = (title or "").lower()
+    snippet = (snippet or "").lower()
 
-# ============================================
-# IMPORT SPECIALISED AGENTS 
-# ============================================
+    if "reddit.com" in netloc or "redd.it" in netloc:
+        if "/comments/" in path or re.search(r"/comments/[a-z0-9]+", path):
+            return "reddit_post"
+        if re.search(r"^/r/[^/]+/?", path) or re.search(r"^/r/[^/]+/(hot|new|top)", path):
+            return "reddit_sub"
+        return "reddit_sub"
 
-import backend.scrapers.scraper_agent as WebScraper
+    if "twitter.com" in netloc or "x.com" in netloc:
+        return "twitter"
 
-# ============================================
-# GOOGLE SEARCH HELPER FUNCTIONS
-# ============================================
+    if "wikipedia.org" in netloc:
+        return "news"
+
+    news_indicators = ["news", "article", "/articles/", "/202", "/story", "press", "opinion"]
+    if any(ind in path for ind in news_indicators) or any(ind in title or ind in snippet for ind in news_indicators):
+        return "news"
+
+    known_news_domains = {
+        "nytimes.com",
+        "theguardian.com",
+        "bbc.co.uk",
+        "cnn.com",
+        "washingtonpost.com"
+    }
+    if any(d in netloc for d in known_news_domains):
+        return "news"
+
+    return "general"
+
 
 def google_search(query: str, num_results: int = 3) -> list:
-    """
-    Perform a Google search and return top results.
-    Uses Google Custom Search JSON API.
-    
-    To use this, you need:
-    1. GOOGLE_API_KEY environment variable
-    2. GOOGLE_CSE_ID (Custom Search Engine ID) environment variable
-    
-    Get these from: https://developers.google.com/custom-search/v1/overview
-    """
     api_key = os.environ.get("GOOGLE_API_KEY")
     cse_id = os.environ.get("GOOGLE_CSE_ID")
-    
+
     if not api_key or not cse_id:
-        print(f"  ⚠ Google API credentials not set, using mock results for: {query}")
-        # Return mock results for demo purposes
         return [
             {
                 "title": f"Result 1 for '{query}'",
@@ -117,18 +121,15 @@ def google_search(query: str, num_results: int = 3) -> list:
                 "url": f"https://example.com/result2?q={quote_plus(query)}",
                 "snippet": f"Additional information about {query}...",
                 "type": "general"
-
             },
             {
                 "title": f"Result 3 for '{query}'",
                 "url": f"https://example.com/result3?q={quote_plus(query)}",
                 "snippet": f"More details about {query}...",
                 "type": "general"
-
             }
         ][:num_results]
-    
-    # Make actual Google search API call
+
     try:
         url = "https://www.googleapis.com/customsearch/v1"
         params = {
@@ -137,422 +138,249 @@ def google_search(query: str, num_results: int = 3) -> list:
             "q": query,
             "num": num_results
         }
-        
+
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-        
-        results = []
+
+        out = []
         for item in data.get("items", [])[:num_results]:
-            title = item.get("title", "")
+            t = item.get("title", "")
             link = item.get("link", "")
-            snippet = item.get("snippet", "")
-            res = {
-                "title": title,
+            sn = item.get("snippet", "")
+            out.append({
+                "title": t,
                 "url": link,
-                "snippet": snippet,
-                "type": infer_source_type(link, title, snippet)
-            }
-            results.append(res)
-        
-        return results
-    except Exception as e:
-        print(f"  ⚠ Google search error: {e}, using mock results")
-        return google_search(query, num_results)  # Fallback to mock
+                "snippet": sn,
+                "type": infer_source_type(link, t, sn),
+            })
+        return out
 
+    except Exception:
+        return google_search(query, num_results)
 
-def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
-    """
-    Heuristic classifier mapping a search result to the scraper type used by
-    backend.scrapers.scraper_agent.scrape_source:
-        - "reddit_post", "reddit_sub", "twitter", "news", "general"
-    """
-    if not url:
-        return "general"
+# -----------------------------------------
+# CREATE LOW-LEVEL AGENTS
+# -----------------------------------------
 
-    parsed = urlparse(url)
-    netloc = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-    title = (title or "").lower()
-    snippet = (snippet or "").lower()
-
-    # Reddit: comment thread vs subreddit listing
-    if "reddit.com" in netloc or "redd.it" in netloc:
-        if "/comments/" in path or re.search(r"/comments/[a-z0-9]+", path):
-            return "reddit_post"
-        if re.search(r"^/r/[^/]+/?", path) or re.search(r"^/r/[^/]+/(hot|new|top)", path):
-            return "reddit_sub"
-        # fallback reddit -> treat as subreddit listing
-        return "reddit_sub"
-
-    # Twitter / X
-    if "twitter.com" in netloc or "x.com" in netloc:
-        if "/status/" in path:
-            return "twitter"
-        # if it's a profile or search, still treat as general (or add 'twitter' if desired)
-        return "twitter"
-
-    # Wikipedia / encyclopedic -> map to 'news' (your scraper expects 'news' for wiki-style)
-    if "wikipedia.org" in netloc:
-        return "news"
-
-    # Heuristics for news sites (domain or path indicators)
-    news_indicators = ["news", "article", "/articles/", "/202", "/story", "press", "opinion"]
-    if any(ind in path for ind in news_indicators) or any(ind in title or ind in snippet for ind in news_indicators):
-        return "news"
-
-    # Some known news domains - expand as needed
-    known_news_domains = {"nytimes.com", "theguardian.com", "bbc.co.uk", "cnn.com", "washingtonpost.com"}
-    if any(d in netloc for d in known_news_domains):
-        return "news"
-
-    # Fallback to general webpage
-    return "general"
-
-# ============================================
-# CREATE SPECIALIST AGENT INSTANCES
-# ============================================
-
-# Create the specialist agents (these are actual Agent objects using OpenAI)
 _source_selector_agent_instance = Agent(
     model=openai_model,
     name="Source Selector",
-    description="Analyzes queries and identifies relevant information sources",
+    description="Generates targeted search queries for multiple source types.",
     system_prompt=SOURCE_SELECTOR_PROMPT,
-    callback_handler=None
+    callback_handler=None,
 )
 
 _scraper_agent_instance = Agent(
     model=openai_model,
     name="Web Scraper",
-    description="Scrapes content from provided sources",
+    description="Extracts atomic ideas from raw sources.",
     system_prompt=SCRAPER_PROMPT,
-    callback_handler=None
+    callback_handler=None,
 )
 
-_vector_db_agent_instance = Agent(
+_graph_rag_agent_instance = Agent(
     model=openai_model,
-    name="Vector Database Manager",
-    description="Stores documents in vector database",
-    system_prompt=VECTOR_DB_PROMPT,
-    callback_handler=None
+    name="Graph RAG Synthesizer",
+    description="Synthesizes an answer from retrieved graph/cluster contexts.",
+    system_prompt=GRAPH_RAG_PROMPT,
+    callback_handler=None,
 )
 
+# personas
+_marketing_persona_agent_instance = build_marketing_persona_agent(openai_model)
+_investment_banking_persona_agent_instance = build_finance_persona_agent(openai_model)
 
-# ============================================
-# WRAP AGENTS AS TOOLS FOR ORCHESTRATOR
-# ============================================
+marketing_persona_agent = make_marketing_persona_tool(_marketing_persona_agent_instance)
+ib_persona_agent = make_finance_persona_tool(_investment_banking_persona_agent_instance)
 
-@tool(description="Generates search queries and finds relevant sources via Google search.")
-def source_selector_agent(query: str) -> str:
+# -----------------------------------------
+# TOOL WRAPPERS
+# -----------------------------------------
+
+@tool(description="Generate 3 diverse Google queries, then gather top sources for each.")
+def source_selector_agent(user_query: str) -> str:
     """
-    Invokes the Source Selector Agent to:
-    1. Generate 3 different Google search queries
-    2. Search Google for each query
-    3. Return top 3 results per query (9 total URLs)
+    Returns:
+      { "sources": [ { "url": ..., "type": ...}, ... ] }
     """
-    print("→ Source Selector Agent activated")
-    print(f"  📝 User query: {query}")
-    
     try:
-        # Step 1: Ask agent to generate 3 search queries
-        result = _source_selector_agent_instance(query)
-        response_text = str(result).strip()
-        
-        print(f"  🤖 Agent generated queries: {response_text[:150]}...")
-        
-        # Parse the search queries from agent response
-        search_queries = json.loads(response_text)
-        
-        if not isinstance(search_queries, list) or len(search_queries) != 3:
-            raise ValueError("Agent must return exactly 3 search queries as a JSON array")
-        
-        print(f"  ✓ Generated {len(search_queries)} search queries")
-        
-        # Step 2: Search Google for each query
-        all_sources = []
-        for i, search_query in enumerate(search_queries, 1):
-            print(f"  🔍 Searching Google [{i}/3]: {search_query}")
-            results = google_search(search_query, num_results=3)
-            
-            # Add results to sources list
-            for result in results:
-                all_sources.append({
-                    "url": result["url"],
-                    "type": result["type"]
-                })
-        
-        print(f"  ✓ Found {len(all_sources)} total sources")
-        
-        return json.dumps({"sources": all_sources})
-        
-    except Exception as e:
-        print(f"  ⚠ Error: {type(e).__name__}: {str(e)[:100]}")
-        print(f"  → Using fallback with generic search queries")
-        
-        # Fallback: Generate basic search queries
-        fallback_queries = [
-            query,
-            f"{query} latest news",
-            f"{query} discussion forum"
+        raw = _source_selector_agent_instance(user_query)
+        queries = json.loads(str(raw).strip())
+    except Exception:
+        queries = [
+            user_query,
+            f"{user_query} latest discussion",
+            f"{user_query} controversy reddit"
         ]
-        
-        all_sources = []
-        for search_query in fallback_queries:
-            results = google_search(search_query, num_results=3)
-            for result in results:
-                all_sources.append({
-                    "url": result["url"],
-                    "type": "web"
-                })
-        
-        return json.dumps({"sources": all_sources})
+
+    all_sources = []
+    for q in queries[:3]:
+        for r in google_search(q, num_results=3):
+            all_sources.append({
+                "url": r["url"],
+                "type": r["type"],
+            })
+    return json.dumps({"sources": all_sources})
 
 
-@tool(description="Scrapes content from provided sources and returns structured documents.")
+@tool(description="Scrape provided sources and extract atomic 'ideas' statements for clustering.")
 async def scraper_agent(sources_json: str) -> str:
     """
-    Uses the WebScraper class to scrape content from sources.
-    Returns structured documents in JSON format.
+    Input:  {"sources":[{"url":"...","type":"reddit_post"}, ...]}
+    Output: {"ideas": ["idea1", "idea2", ...]}
     """
-
-    print("→ Scraper Agent activated")
-
     try:
         payload = json.loads(sources_json)
-        sources = payload.get("sources") if isinstance(payload, dict) else payload
-        sources = sources or []
+        sources = payload.get("sources", [])
     except Exception:
         sources = []
 
-    # ensure each source is the expected shape for scrape_and_generate_ideas:
-    # list of {"url": "...", "type": "..."}
-    # (source_selector_agent should already produce that)
-    # Call the synchronous function in a thread pool so we don't block the event loop
     loop = asyncio.get_running_loop()
-    try:
-        LoI = await loop.run_in_executor(
-            None,
-            WebScraper.scrape_and_generate_ideas,
-            sources
-        )
+    ideas_list = await loop.run_in_executor(
+        None,
+        WebScraper.scrape_and_generate_ideas,
+        sources
+    )
 
-        print(LoI)
-        return json.dumps(LoI)
+    return json.dumps({"ideas": ideas_list})
 
-    except Exception as e:
-        print(f"  ⚠ scrape failure: {e}")
-        LoI = []
-        return json.dumps(LoI)
 
-@tool(description="Stores documents in a vector database and returns storage confirmation.")
-def vector_db_agent(documents_json: str) -> str:
+@tool(description="Cluster ideas, build/expand the global knowledge graph, and update the shared knowledge base.")
+def graph_builder_agent(ideas_json: str) -> str:
     """
-    Invokes the Vector Database Agent to store documents.
-    Accepts:
-      - JSON array of document dicts: {"source","text","metadata":{...}}
-      - JSON array of strings (flat list of ideas) -> will be wrapped into docs
+    Input: {"ideas":["...", "...", ...]}
 
-    Returns a JSON object with storage metadata.
+    Updates global knowledge_base using cluster_and_summarize + build_cluster_graph.
     """
-    print("→ Vector DB Agent activated")
+    global knowledge_base
 
-    # parse input
     try:
-        docs_input = json.loads(documents_json)
+        payload = json.loads(ideas_json)
+        ideas = payload.get("ideas", [])
     except Exception:
-        docs_input = []
+        ideas = []
 
-    # Normalize flat list of strings into document dicts
-    normalized_docs = []
-    if isinstance(docs_input, list):
-        for i, item in enumerate(docs_input):
-            if isinstance(item, str):
-                text = item
-                source = f"idea_{i}"
-                metadata = {
-                    "type": "idea",
-                    "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
-                    "word_count": len(text.split())
-                }
-                normalized_docs.append({
-                    "source": source,
-                    "text": text,
-                    "metadata": metadata
-                })
-            elif isinstance(item, dict):
-                # ensure required fields and sane metadata
-                src = item.get("source", f"doc_{i}")
-                text = item.get("text", str(item))
-                meta = item.get("metadata", {})
-                meta.setdefault("type", meta.get("type", "unknown"))
-                meta.setdefault("scraped_at", __import__("datetime").datetime.utcnow().isoformat() + "Z")
-                meta.setdefault("word_count", len(text.split()))
-                normalized_docs.append({
-                    "source": src,
-                    "text": text,
-                    "metadata": meta
-                })
-            else:
-                # fallback: wrap other types
-                text = str(item)
-                normalized_docs.append({
-                    "source": f"doc_{i}",
-                    "text": text,
-                    "metadata": {
-                        "type": "unknown",
-                        "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
-                        "word_count": len(text.split())
-                    }
-                })
-    else:
-        normalized_docs = []
+    if not ideas:
+        return json.dumps({
+            "kb_size": len(knowledge_base),
+            "clusters_added": 0,
+            "status": "no_ideas"
+        })
 
-    # Invoke the actual agent
-    prompt = f"""Please process and store the following documents in the vector database.
+    clustered_data = cluster_and_summarize(ideas)
+    embedding_to_explanation, group_to_explanation, _sim = build_cluster_graph(
+        clustered_data
+    )
 
-Documents to store:
-{json.dumps(normalized_docs, indent=2)}
+    added = 0
+    for emb_tuple, text_block in embedding_to_explanation.items():
+        if emb_tuple not in knowledge_base:
+            added += 1
+        knowledge_base[emb_tuple] = text_block
 
-Return ONLY a JSON object with this format:
+    return json.dumps({
+        "kb_size": len(knowledge_base),
+        "clusters_added": added,
+        "status": "ok"
+    })
+
+
+@tool(description="Query the global knowledge base using Graph RAG and synthesize an answer.")
+def graph_rag_agent(user_query: str) -> str:
+    """
+    Output:
+    {
+      "answer": "...",
+      "sources_used": n,
+      "confidence": "high|medium|low",
+      "contexts": [...]
+    }
+    """
+    global knowledge_base
+
+    if not knowledge_base:
+        return json.dumps({
+            "answer": "No knowledge available yet.",
+            "sources_used": 0,
+            "confidence": "low",
+            "contexts": []
+        })
+
+    contexts = rag_query(knowledge_base, user_query, top_k=3)
+    context_texts = [c["text"] for c in contexts]
+
+    synthesis_prompt = f"""
+You are the Graph RAG synthesis specialist.
+
+User Query: {user_query}
+
+Retrieved Contexts:
+{json.dumps(context_texts, indent=2)}
+
+Return ONLY a JSON object:
 {{
-    "stored": <count>,
-    "ids": ["id1", "id2", ...],
-    "embedding_model": "model_name",
-    "vector_dimension": 1536,
-    "index_name": "index_name"
+    "answer": "your comprehensive answer here",
+    "sources_used": <number>,
+    "confidence": "high/medium/low"
 }}
-"""
+""".strip()
 
-    result = _vector_db_agent_instance(prompt)
-    response_text = str(result).strip()
+    llm_raw = _graph_rag_agent_instance(synthesis_prompt)
+    llm_text = str(llm_raw).strip()
 
-    # Try to parse as JSON, if it fails provide a deterministic fallback
     try:
-        json.loads(response_text)
-        return response_text
-    except:
-        print("  ⚠ Agent didn't return valid JSON, using fallback storage implementation")
-        stored_ids = []
-        for i, doc in enumerate(normalized_docs):
-            doc_id = f"vec_doc_{abs(hash(doc.get('source', '')))%10000}_{i}"
-            stored_ids.append(doc_id)
-
-        fallback_result = {
-            "stored": len(normalized_docs),
-            "ids": stored_ids,
-            "embedding_model": "mock-embeddings-v1",
-            "vector_dimension": 1536,
-            "index_name": "ai_safety_documents"
+        parsed = json.loads(llm_text)
+    except Exception:
+        parsed = {
+            "answer": llm_text,
+            "sources_used": len(contexts),
+            "confidence": "medium"
         }
 
-        return json.dumps(fallback_result)
+    parsed["contexts"] = contexts
+    return json.dumps(parsed)
 
+# NOTE:
+# marketing_persona_agent and ib_persona_agent are both @tool from the factories.
+# Their signature now is:
+#   persona_tool(
+#       mode: str,               # "plan" or "deliver"
+#       persona_task: str,       # ex. "draft_marketing_strategy"
+#       kb_size: int,            # len(knowledge_base)
+#       graph_answer_json: str   # output from graph_rag_agent(...)
+#   ) -> str
 
-# ============================================
-# ORCHESTRATOR AGENT
-# ============================================
+# -----------------------------------------
+# SUPERVISOR PROMPT WITH LOOPS
+# -----------------------------------------
+
+SUPERVISOR_PROMPT =  ORCHESTRATOR_PROMPT
+
+# -----------------------------------------
+# BUILD ORCHESTRATOR
+# -----------------------------------------
 
 def _build_orchestrator() -> Agent:
     """
-    Create the main orchestrator Agent that coordinates the specialist agents.
-    
-    The orchestrator has access to three specialist agents (wrapped as tools)
-    and can invoke them to complete complex workflows.
+    The Supervisor agent that:
+    - picks persona + persona_task
+    - asks persona in 'plan' mode if KB is enough
+    - maybe enriches KB via source_selector -> scraper -> graph_builder
+    - asks persona in 'deliver' mode for final answer
+    - returns ONLY persona output
     """
-    system_prompt = """
-You are the Teacher's Assistant orchestrator that coordinates specialist agents.
-
-You have access to three specialist agents:
-1. source_selector_agent - Generates 3 Google search queries and returns top 3 results per query (9 URLs total)
-2. scraper_agent - Scrapes content from provided URLs
-3. vector_db_agent - Stores documents in a vector database
-
-When given a task, think through which agents to use and in what order.
-    """
-
     orchestrator = Agent(
         model=openai_model,
-        system_prompt=system_prompt,
-        tools=[source_selector_agent, scraper_agent, vector_db_agent],
-        callback_handler=None
+        system_prompt=SUPERVISOR_PROMPT,
+        tools=[
+            source_selector_agent,
+            scraper_agent,
+            graph_builder_agent,
+            graph_rag_agent,
+            marketing_persona_agent,
+            ib_persona_agent,
+        ],
+        callback_handler=None,
     )
     return orchestrator
-
-
-async def process_user_query(query: str, user_id: str = "user123", session_id: str = "session456") -> str:
-    """
-    High-level workflow that uses the orchestrator to coordinate specialist agents.
-    
-    This implementation uses the "Agents as Tools" pattern where each specialist
-    agent is wrapped as a tool and invoked by the orchestrator agent.
-    """
-    orchestrator = _build_orchestrator()
-
-    print("=" * 60)
-    print("MULTI-AGENT WORKFLOW STARTED")
-    print("=" * 60)
-
-    # Step 1: Source selection
-    print("\n📋 Step 1: Selecting sources...")
-    print(f"Query: {query}")
-    tool1 = orchestrator.tool.source_selector_agent(query=query)
-    
-    # Extract the response - tool returns a dict with toolUseId, status, content
-    sources_json = tool1.get("content", [{}])[-1].get("text", "{}")
-    try:
-        sources_payload = json.loads(sources_json)
-    except Exception as e:
-        print(f"Warning: Could not parse sources JSON: {e}")
-        sources_payload = {"sources": []}
-    
-    print(f"✓ Found {len(sources_payload.get('sources', []))} sources from Google search")
-    for i, src in enumerate(sources_payload.get("sources", [])[:6], 1):  # Show first 6
-        # print(f"  {i}. {src.get('title', 'No title')}")
-        print(f"     URL: {src.get('url')}")
-        # print(f"     Query: {src.get('search_query', 'N/A')}")
-
-    # Step 2: Scraping
-    print("\n🌐 Step 2: Scraping sources...")
-    tool2 = orchestrator.tool.scraper_agent(sources_json=json.dumps(sources_payload))
-    
-    scraped_json = tool2.get("content", [{}])[-1].get("text", "[]")
-    try:
-        scraped_docs = json.loads(scraped_json)
-    except Exception as e:
-        print(f"Warning: Could not parse scraped JSON: {e}")
-        scraped_docs = []
-    
-    print(f"✓ Scraped {len(scraped_docs)} documents")
-    for doc in scraped_docs[:2]:  # Show first 2
-        # print(f"  - {doc.get('source')}")
-        # print(f"    Preview: {doc.get('text', '')[:80]}...")
-        print(doc)
-
-    # Step 3: Vector DB storage
-    # print("\n💾 Step 3: Storing in vector database...")
-    # tool3 = orchestrator.tool.vector_db_agent(documents_json=json.dumps(scraped_docs))
-    
-    # store_json = tool3.get("content", [{}])[-1].get("text", "{}")
-    # try:
-    #     store_result = json.loads(store_json)
-    # except Exception as e:
-    #     print(f"Warning: Could not parse storage JSON: {e}")
-    #     store_result = {"stored": 0, "ids": []}
-    
-    # print(f"✓ Stored {store_result.get('stored', 0)} documents")
-    # print(f"  Document IDs: {', '.join(store_result.get('ids', [])[:5])}{'...' if len(store_result.get('ids', [])) > 5 else ''}")
-
-    # print("\n" + "=" * 60)
-    # print("WORKFLOW COMPLETED SUCCESSFULLY")
-    # print("=" * 60)
-
-    return json.dumps(scraped_docs, indent=2)
-
-
-if __name__ == "__main__":
-    async def main():
-        result = await process_user_query(query="How is Liverpool FC performing in the Premier League this season?")
-        print("\nFinal Result:", result)
-
-    asyncio.run(main())
