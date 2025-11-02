@@ -4,6 +4,9 @@
       <p>Send a message about a social area you'd like to learn about to visualize the graph.</p>
     </div>
     <div v-show="hasGraphData" class="graph-visualization" ref="networkRef"></div>
+    <transition name="graph-whiteout-fade">
+      <div v-if="hideGraph" class="graph-whiteout-overlay" :style="{ background: overlayColor }"></div>
+    </transition>
     <div v-if="currentAnnotationText" class="annotation-tooltip" :style="annotationTooltipStyle">
       <div class="annotation-content">{{ currentAnnotationText }}</div>
       <div v-if="selectedNodeAnnotations.length > 1" class="annotation-nav">
@@ -55,6 +58,8 @@ interface AnnotationInfo {
 const props = defineProps<{
   graphData: GraphData | null;
   chatOpen: boolean;
+  hideGraph?: boolean;
+  overlayColor?: string;
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
@@ -592,5 +597,32 @@ onUnmounted(() => {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid #0ABAB5;
+}
+
+.graph-whiteout-overlay {
+  background: #faf9f6;
+  height: 100%;
+  left: 0;
+  opacity: 1;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 100%;
+  z-index: 20;
+}
+
+.graph-whiteout-fade-enter-active,
+.graph-whiteout-fade-leave-active {
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.graph-whiteout-fade-enter-from,
+.graph-whiteout-fade-leave-to {
+  opacity: 0;
+}
+
+.graph-whiteout-fade-enter-to,
+.graph-whiteout-fade-leave-from {
+  opacity: 1;
 }
 </style>
