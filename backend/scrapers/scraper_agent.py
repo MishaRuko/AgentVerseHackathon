@@ -51,6 +51,7 @@ from . import general_scraper
 from . import news_scraper
 from . import reddit_scraper_post
 from . import reddit_scraper_sub
+from . import scholar_scraper
 # TWITTER DISABLED - uncomment to re-enable Twitter scraping
 # from . import twitter_scraper
 
@@ -59,12 +60,14 @@ def scrape_source(url: str, source_type: str) -> Any:
     Dispatch to the correct scraper based on source_type.
 
     Args:
-        url (str): The URL to scrape.
+        url (str): The URL to scrape OR a search query for scholar.
         source_type (str): One of:
             "general"        -> generic webpage
             "news"           -> news / wiki-style article
             "reddit_post"    -> single reddit post + comments
             "reddit_sub"     -> whole subreddit listing
+            "scholar"        -> Google Scholar search (url is the query string)
+            "scholar_url"    -> Google Scholar URL scraping (url is actual scholar URL)
             # "twitter"        -> tweet + replies (DISABLED)
 
     Returns:
@@ -92,6 +95,16 @@ def scrape_source(url: str, source_type: str) -> Any:
         # Example input for this branch should be: "python" not "https://reddit.com/r/python"
         # returns list[ {title, content, comments:[...]} ]
         return reddit_scraper_sub.scrape_subreddit(url, limit=5)
+
+    elif source_type == "scholar":
+        # url is actually a search query, not a URL
+        # returns list[ {title, authors, year, abstract, url, citations, source} ]
+        return scholar_scraper.scrape_scholar_search(url, num_results=5)
+
+    elif source_type == "scholar_url":
+        # url is an actual Google Scholar URL
+        # returns list[ {title, authors, abstract, url, source} ]
+        return scholar_scraper.scrape_scholar_url(url)
 
     # TWITTER DISABLED - uncomment to re-enable Twitter scraping
     # elif source_type == "twitter":

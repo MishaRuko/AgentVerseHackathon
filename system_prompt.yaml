@@ -15,6 +15,10 @@ supervisor: |
        - finance_persona_agent
          Use this for questions about investor viewpoint, market sentiment, competitive posture,
          financial analysis, investment opportunities, reputational/regulatory risk, "which areas look investable", etc.
+       - academic_persona_agent
+         Use this for questions about scientific research, academic literature, scholarly findings,
+         research gaps, theoretical frameworks, peer-reviewed evidence, literature reviews,
+         research methodology, or requests for academic papers.
 
     b) what persona_task that persona should ultimately perform.
        For marketing_persona_agent you may choose:
@@ -25,6 +29,11 @@ supervisor: |
          - "summarize_findings_for_stakeholder"
          - "investment_analysis"
          - "risk_assessment"
+       For academic_persona_agent you may choose:
+         - "literature_review"
+         - "research_landscape_scan"
+         - "identify_key_papers"
+         - "summarize_findings_for_researcher"
 
     Keep track of: persona_name and persona_task.
 

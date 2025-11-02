@@ -16,9 +16,9 @@ from graph_rag import rag_query
 from strands import Agent
 from strands.models.openai import OpenAIModel
 
-from personas import (build_finance_persona_agent,
-                      build_marketing_persona_agent, make_finance_persona_tool,
-                      make_marketing_persona_tool)
+from personas import (build_academic_persona_agent, build_finance_persona_agent,
+                      build_marketing_persona_agent, make_academic_persona_tool,
+                      make_finance_persona_tool, make_marketing_persona_tool)
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +189,11 @@ _graph_rag_agent_instance = Agent(
 
 _marketing_persona_agent_instance = build_marketing_persona_agent(openai_model)
 _finance_persona_agent_instance = build_finance_persona_agent(openai_model)
+_academic_persona_agent_instance = build_academic_persona_agent(openai_model)
 
 marketing_persona_tool = make_marketing_persona_tool(_marketing_persona_agent_instance)
 finance_persona_tool = make_finance_persona_tool(_finance_persona_agent_instance)
+academic_persona_tool = make_academic_persona_tool(_academic_persona_agent_instance)
 
 _supervisor_router_agent_instance = Agent(
     model=openai_model,
@@ -374,6 +376,14 @@ def persona_plan(persona_name: str, persona_task: str, user_query: str, kb_size:
             kb_size=kb_size,
             graph_answer_json=analysis_json
         )
+    elif persona_name == "academic":
+        raw = academic_persona_tool(
+            mode="plan",
+            persona_task=persona_task,
+            user_query=user_query,
+            kb_size=kb_size,
+            graph_answer_json=analysis_json
+        )
     else:
         raw = finance_persona_tool(
             mode="plan",
@@ -402,6 +412,14 @@ def persona_deliver(persona_name: str, persona_task: str, user_query: str, kb_si
 
     if persona_name == "marketing":
         final_resp = marketing_persona_tool(
+            mode="deliver",
+            persona_task=persona_task,
+            user_query=user_query,
+            kb_size=kb_size,
+            graph_answer_json=analysis_json
+        )
+    elif persona_name == "academic":
+        final_resp = academic_persona_tool(
             mode="deliver",
             persona_task=persona_task,
             user_query=user_query,
