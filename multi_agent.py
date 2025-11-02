@@ -51,6 +51,11 @@ with open("system_prompt.yaml", "r") as f:
     _sys = yaml.safe_load(f)
     SUPERVISOR_PROMPT = _sys["supervisor"]
 
+with open("system_prompt.yaml", "r") as f:
+    _sys = yaml.safe_load(f)
+    SUPERVISOR_PROMPT = _sys["supervisor"]
+
+
 # -------------------------------------------------
 # util functions same as before (infer_source_type, google_search)
 # -------------------------------------------------
