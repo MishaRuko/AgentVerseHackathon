@@ -78,15 +78,17 @@ def build_cluster_graph(clustered_data, meaningful_similarity_threshold=0.3):
         group_summaries = [G.nodes[node]['summary'] for node in group_nodes]
 
         # 4. For each cluster group, use an LLM to generate an explanation
+        nl = '\n'
         llm_prompt = f"""The following are summaries of related ideas:
-{'- ' + '\n- '.join(group_summaries)}
+        {'- ' + f'{nl}- '.join(group_summaries)}
 
-Explain concisely and succinctly why these ideas are related and provide a brief overarching theme or connection. Do not ramble. The more ideas there are, the more broad/general you should try to make your explanation."""
+        Explain concisely and succinctly why these ideas are related and provide a brief overarching theme or connection. Do not ramble. The more ideas there are, the more broad/general you should try to make your explanation.""" 
+            
 
         group_explanation = agent(llm_prompt)
 
         # 5. Combine, embed, and add to results
-        combined_description = f"Overarching theme: {group_explanation}\n\nRelated ideas:\n{'- ' + '\n- '.join(group_summaries)}"
+        combined_description = f"Overarching theme: {group_explanation}\n\nRelated ideas:\n{'- ' + f'{nl}- '.join(group_summaries)}"
         combined_embedding = model.encode([combined_description])[0]
 
         group_to_explanation[tuple(group_nodes)] = combined_description

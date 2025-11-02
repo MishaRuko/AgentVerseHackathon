@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 
-const WS_URL = 'ws://localhost:8001';
+const WS_URL = 'ws://localhost:8001/ws';
 
 export function useBackendService() {
   const ws = ref(null);
@@ -104,6 +104,8 @@ export function useBackendService() {
     }
     ws.value.send(message);
     addMessage('human', message);
+    console.log('Message Sent');
+
   }
 
   // --- Initialization ---

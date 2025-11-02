@@ -266,12 +266,12 @@ def update_graph_and_kb(ideas: dict) -> dict:
     idea_list = ideas.get("ideas", [])
     if not idea_list:
         logger.warning("   ⚠️  No ideas to process")
-        return {
+        return ({
             "kb_size": len(knowledge_base),
             "clusters_added": 0,
             "status": "no_ideas",
             "needs_more_data": True
-        }
+        }, None)
 
     logger.info(f"   🔄 Clustering {len(idea_list)} ideas...")
     clustered = cluster_and_summarize(idea_list)
@@ -295,12 +295,13 @@ def update_graph_and_kb(ideas: dict) -> dict:
         knowledge_base[emb_tuple] = txt
 
     logger.info(f"   ✅ Added {added} new entries to knowledge base")
-    return {
+    frontend_info = [clustered, group_to_explanation, _sim]
+    return ({
         "kb_size": len(knowledge_base),
         "clusters_added": added,
         "status": "ok" if not needs_more_data else "insufficient_similarity",
         "needs_more_data": needs_more_data
-    }
+    }, frontend_info)
 
 
 def run_graph_rag(user_query: str) -> dict:
