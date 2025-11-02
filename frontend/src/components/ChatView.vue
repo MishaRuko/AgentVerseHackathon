@@ -8,8 +8,9 @@
         </div>
         <div class="chat-messages" :class="{ 'visible-messages': messages && messages.length > 0 }"
           ref="messagesContainer">
-          <div v-for="(message, idx) in messages" :key="idx" :class="['chat-message', message.type]">
-            <div class="chat-message-content">{{ message.content }}</div>
+          <div v-for="(message, idx) in displayMessages" :key="idx" :class="['chat-message', message.type]">
+            <div v-if="message.persona" class="chat-message-persona">{{ message.persona }}</div>
+            <div class="chat-message-content" :class="getPersonaClass(message.persona)">{{ message.content }}</div>
           </div>
         </div>
       </div>
@@ -27,12 +28,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, defineProps, defineEmits, onMounted, watch } from 'vue';
+import { ref, defineProps, defineEmits, onMounted, watch, computed } from 'vue';
 
 interface ChatMessage {
   type: 'human' | 'ai';
   content: string;
   timestamp: Date | string;
+  persona?: string;
 }
 
 const props = defineProps<{
@@ -43,6 +45,29 @@ const emit = defineEmits(['send']);
 const input = ref('');
 const inputBoxRef = ref<HTMLTextAreaElement | null>(null);
 const messagesContainer = ref<HTMLDivElement | null>(null);
+
+const displayMessages = computed(() => {
+  return props.messages.map(message => {
+    if (message.type === 'ai') {
+      const match = message.content.match(/^(\w+) Agent: (.*)/);
+      if (match) {
+        return {
+          ...message,
+          persona: match[1],
+          content: match[2],
+        };
+      }
+    }
+    return message;
+  });
+});
+
+function getPersonaClass(persona?: string) {
+  if (!persona) {
+    return '';
+  }
+  return `persona-${persona.toLowerCase()}`;
+}
 
 function autoResize() {
   const el = inputBoxRef.value;

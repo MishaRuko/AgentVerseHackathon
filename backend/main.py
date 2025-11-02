@@ -488,6 +488,9 @@ async def handle_user_query(user_query: str, websocket: WebSocket | None = None)
         analysis=final_analysis
     )
     
+    # Prepend persona name for display
+    final_output_text = f"{persona_name.capitalize()} Agent: {final_output_text}"
+    
     output_preview = final_output_text[:200] + "..." if len(final_output_text) > 200 else final_output_text
     logger.info(f"✅ Response generated ({len(final_output_text)} chars)")
     logger.info(f"   Preview: {output_preview}")
