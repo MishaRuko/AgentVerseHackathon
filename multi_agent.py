@@ -5,10 +5,13 @@ import re
 import asyncio
 import requests
 import yaml
+import logging
 from urllib.parse import quote_plus, urlparse
 from dotenv import load_dotenv
 from strands import Agent
 from strands.models.openai import OpenAIModel
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(REPO_ROOT, "backend")
@@ -38,9 +41,9 @@ with open(os.path.join(REPO_ROOT, "agent_prompts.yaml"), "r") as f:
     SCRAPER_PROMPT = _p["scraper"]
     GRAPH_RAG_PROMPT = _p["graph_rag"]
 
-with open(os.path.join(REPO_ROOT, "marketing_strategist.yaml"), "r") as f:
+with open(os.path.join(REPO_ROOT, "system_prompt.yaml"), "r") as f:
     _o = yaml.safe_load(f)
-    BASE_ORCHESTRATOR_PROMPT = _o["orchestrator"]
+    BASE_ORCHESTRATOR_PROMPT = _o["supervisor"]
 
 openai_model = OpenAIModel(
     model_id="gpt-4o-mini",
@@ -62,8 +65,9 @@ def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
             return "reddit_sub"
         return "reddit_sub"
 
-    if "twitter.com" in netloc or "x.com" in netloc:
-        return "twitter"
+    # TWITTER DISABLED - uncomment to re-enable Twitter scraping
+    # if "twitter.com" in netloc or "x.com" in netloc:
+    #     return "twitter"
 
     if "wikipedia.org" in netloc:
         return "news"
@@ -136,8 +140,28 @@ def google_search(query: str, num_results: int = 3) -> list:
             })
         return out
 
-    except Exception:
-        return google_search(query, num_results)
+    except Exception as e:
+        print(f"Google search API error: {e}. Falling back to mock results.")
+        return [
+            {
+                "title": f"Result 1 for '{query}'",
+                "url": f"https://example.com/result1?q={quote_plus(query)}",
+                "snippet": f"Mock search result about {query}...",
+                "type": "general"
+            },
+            {
+                "title": f"Result 2 for '{query}'",
+                "url": f"https://example.com/result2?q={quote_plus(query)}",
+                "snippet": f"More info about {query}...",
+                "type": "general"
+            },
+            {
+                "title": f"Result 3 for '{query}'",
+                "url": f"https://example.com/result3?q={quote_plus(query)}",
+                "snippet": f"Extra details about {query}...",
+                "type": "general"
+            }
+        ][:num_results]
 
 _source_selector_agent_instance = Agent(
     model=openai_model,
@@ -195,10 +219,13 @@ _supervisor_router_agent_instance = Agent(
 knowledge_base = {}
 
 def run_source_selector(user_query: str) -> dict:
+    logger.info("   🔍 Source selector generating search queries...")
     raw = _source_selector_agent_instance(user_query)
     try:
         queries = json.loads(str(raw).strip())
-    except Exception:
+        logger.info(f"   ✅ Generated {len(queries)} search queries")
+    except Exception as e:
+        logger.warning(f"   ⚠️  Failed to parse queries, using fallback: {e}")
         queries = [
             user_query,
             f"{user_query} latest discussion",
@@ -206,23 +233,30 @@ def run_source_selector(user_query: str) -> dict:
         ]
 
     all_sources = []
-    for q in queries[:3]:
-        for r in google_search(q, num_results=3):
+    for i, q in enumerate(queries[:3], 1):
+        logger.info(f"   🔎 Query {i}: {q}")
+        results = google_search(q, num_results=3)
+        logger.info(f"      Found {len(results)} results")
+        for r in results:
             all_sources.append({
                 "url": r["url"],
                 "type": r["type"],
             })
 
+    logger.info(f"   ✅ Total sources collected: {len(all_sources)}")
     return {"sources": all_sources}
 
 
 async def run_scraper(sources: dict) -> dict:
+    source_list = sources.get("sources", [])
+    logger.info(f"   🌐 Starting scraper for {len(source_list)} sources...")
     loop = asyncio.get_running_loop()
     ideas_list = await loop.run_in_executor(
         None,
         WebScraper.scrape_and_generate_ideas,
-        sources.get("sources", [])
+        source_list
     )
+    logger.info(f"   ✅ Scraping complete. Extracted {len(ideas_list)} ideas")
     return {"ideas": ideas_list}
 
 
@@ -231,14 +265,28 @@ def update_graph_and_kb(ideas: dict) -> dict:
 
     idea_list = ideas.get("ideas", [])
     if not idea_list:
+        logger.warning("   ⚠️  No ideas to process")
         return {
             "kb_size": len(knowledge_base),
             "clusters_added": 0,
-            "status": "no_ideas"
+            "status": "no_ideas",
+            "needs_more_data": True
         }
 
+    logger.info(f"   🔄 Clustering {len(idea_list)} ideas...")
     clustered = cluster_and_summarize(idea_list)
+    logger.info(f"   ✅ Created {len(clustered)} clusters")
+    
+    logger.info(f"   🔗 Building cluster graph...")
     embedding_to_explanation, group_to_explanation, _sim = build_cluster_graph(clustered)
+    
+    # Check if clusters are too dissimilar (no groups formed)
+    needs_more_data = len(group_to_explanation) == 0 and len(clustered) > 1
+    
+    if needs_more_data:
+        logger.warning(f"   ⚠️  Clusters too dissimilar - no meaningful connections found")
+    else:
+        logger.info(f"   ✅ Graph built with {len(group_to_explanation)} cluster groups")
 
     added = 0
     for emb_tuple, txt in embedding_to_explanation.items():
@@ -246,10 +294,12 @@ def update_graph_and_kb(ideas: dict) -> dict:
             added += 1
         knowledge_base[emb_tuple] = txt
 
+    logger.info(f"   ✅ Added {added} new entries to knowledge base")
     return {
         "kb_size": len(knowledge_base),
         "clusters_added": added,
-        "status": "ok"
+        "status": "ok" if not needs_more_data else "insufficient_similarity",
+        "needs_more_data": needs_more_data
     }
 
 
@@ -257,6 +307,7 @@ def run_graph_rag(user_query: str) -> dict:
     global knowledge_base
 
     if not knowledge_base:
+        logger.warning("   ⚠️  Knowledge base is empty")
         return {
             "answer": "No knowledge available yet.",
             "sources_used": 0,
@@ -264,8 +315,10 @@ def run_graph_rag(user_query: str) -> dict:
             "contexts": []
         }
 
+    logger.info(f"   🔍 Querying KB with {len(knowledge_base)} entries...")
     contexts = rag_query(knowledge_base, user_query, top_k=3)
     ctx_texts = [c["text"] for c in contexts]
+    logger.info(f"   ✅ Retrieved {len(contexts)} relevant contexts")
 
     synthesis_prompt = f"""
 You are the Graph RAG synthesis specialist.
@@ -283,12 +336,15 @@ Return ONLY a JSON object:
 }}
     """.strip()
 
+    logger.info(f"   🤖 Synthesizing answer with LLM...")
     llm_raw = _graph_rag_agent_instance(synthesis_prompt)
     llm_text = str(llm_raw).strip()
 
     try:
         parsed = json.loads(llm_text)
-    except Exception:
+        logger.info(f"   ✅ Synthesis complete (confidence: {parsed.get('confidence', 'unknown')})")
+    except Exception as e:
+        logger.warning(f"   ⚠️  Failed to parse LLM response: {e}")
         parsed = {
             "answer": llm_text,
             "sources_used": len(contexts),
@@ -300,10 +356,13 @@ Return ONLY a JSON object:
 
 
 def route_persona_and_task(user_query: str) -> dict:
+    logger.info("   🤖 Supervisor analyzing query for routing...")
     result = _supervisor_router_agent_instance(user_query)
     try:
         routing = json.loads(str(result).strip())
-    except Exception:
+        logger.info(f"   ✅ Routing decision made")
+    except Exception as e:
+        logger.warning(f"   ⚠️  Failed to parse routing, using default: {e}")
         routing = {
             "persona_name": "marketing",
             "persona_task": "summarize_findings_for_stakeholder"
@@ -312,6 +371,7 @@ def route_persona_and_task(user_query: str) -> dict:
 
 
 def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> dict:
+    logger.info(f"   🤖 {persona_name.capitalize()} persona creating plan...")
     analysis_json = json.dumps(analysis)
 
     if persona_name == "marketing":
@@ -331,7 +391,9 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
 
     try:
         plan = json.loads(raw)
-    except Exception:
+        logger.info(f"   ✅ Plan created")
+    except Exception as e:
+        logger.warning(f"   ⚠️  Failed to parse plan, using default: {e}")
         plan = {
             "need_more_info": True,
             "persona_task": persona_task,
@@ -341,6 +403,7 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
 
 
 def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> str:
+    logger.info(f"   🤖 {persona_name.capitalize()} persona generating final response...")
     analysis_json = json.dumps(analysis)
 
     if persona_name == "marketing":
@@ -358,4 +421,5 @@ def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis
             graph_answer_json=analysis_json
         )
 
+    logger.info(f"   ✅ Response generated by {persona_name} persona")
     return final_resp

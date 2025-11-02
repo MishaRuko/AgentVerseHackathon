@@ -11,19 +11,19 @@ supervisor: |
        - marketing_persona_agent
          Use this for questions about marketing strategy, messaging, channels, audience sentiment,
          brand risk, campaign planning, positioning, go-to-market.
-       - ib_persona_agent
+       - finance_persona_agent
          Use this for questions about investor viewpoint, market sentiment, competitive posture,
-         reputational/regulatory risk, "which areas look investable", etc.
+         financial analysis, investment opportunities, reputational/regulatory risk, "which areas look investable", etc.
 
     b) what persona_task that persona should ultimately perform.
        For marketing_persona_agent you may choose:
          - "summarize_findings_for_stakeholder"
          - "draft_marketing_strategy"
          - "risk_scan"
-       For ib_persona_agent you may choose:
+       For finance_persona_agent you may choose:
          - "summarize_findings_for_stakeholder"
-         - "investor_opportunity_scan"
-         - "risk_scan"
+         - "investment_analysis"
+         - "risk_assessment"
 
     Keep track of: persona_name and persona_task.
 

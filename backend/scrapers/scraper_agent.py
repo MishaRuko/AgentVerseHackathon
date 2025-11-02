@@ -5,10 +5,16 @@
 ################################################
 
 import os
+import sys
 import yaml
 from typing import List, Tuple, Dict, Any, Union
 
-from ..llm import llm
+# Add backend to path for imports
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+from llm import llm
 
 # Load scraper prompt from YAML file
 _prompt_cache = None
@@ -45,7 +51,8 @@ from . import general_scraper
 from . import news_scraper
 from . import reddit_scraper_post
 from . import reddit_scraper_sub
-from . import twitter_scraper
+# TWITTER DISABLED - uncomment to re-enable Twitter scraping
+# from . import twitter_scraper
 
 def scrape_source(url: str, source_type: str) -> Any:
     """
@@ -58,7 +65,7 @@ def scrape_source(url: str, source_type: str) -> Any:
             "news"           -> news / wiki-style article
             "reddit_post"    -> single reddit post + comments
             "reddit_sub"     -> whole subreddit listing
-            "twitter"        -> tweet + replies
+            # "twitter"        -> tweet + replies (DISABLED)
 
     Returns:
         The raw scraped data (whatever that scraper returns).
@@ -86,14 +93,19 @@ def scrape_source(url: str, source_type: str) -> Any:
         # returns list[ {title, content, comments:[...]} ]
         return reddit_scraper_sub.scrape_subreddit(url, limit=5)
 
-    elif source_type == "twitter":
-        # returns dict {title, content, comments:[...]}
-        # needs bearer token from env
-        bearer_token = os.getenv("X_BEARER_TOKEN")
-        if not bearer_token:
-            raise RuntimeError("X_BEARER_TOKEN environment variable not set for twitter scraping")
-
-        return twitter_scraper.get_post_and_replies(url, bearer_token, max_results=50)
+    # TWITTER DISABLED - uncomment to re-enable Twitter scraping
+    # elif source_type == "twitter":
+    #     # returns dict {title, content, comments:[...]}
+    #     # needs bearer token from env
+    #     bearer_token = os.getenv("X_BEARER_TOKEN")
+    #     if not bearer_token:
+    #         print("[WARNING] X_BEARER_TOKEN not set - skipping Twitter scraping")
+    #         return {
+    #             "title": "Twitter scraping unavailable",
+    #             "content": "Twitter API access requires X_BEARER_TOKEN environment variable",
+    #             "comments": []
+    #         }
+    #     return twitter_scraper.get_post_and_replies(url, bearer_token, max_results=50)
 
     else:
         raise ValueError(f"Unknown source_type '{source_type}'")
@@ -130,23 +142,6 @@ def _flatten_reddit_sub_list(posts_list: List[Dict[str, Any]]) -> str:
     for idx, post in enumerate(posts_list):
         chunks.append(f"[POST {idx+1}]\n" + _flatten_reddit_post_dict(post))
     return "\n\n".join(chunks).strip()
-
-
-def _flatten_twitter_dict(tweet_dict: Dict[str, Any]) -> str:
-    """
-    Take twitter scrape output:
-        { 'title': root_text, 'content': root_text, 'comments': [...] }
-    and merge.
-    """
-    if not isinstance(tweet_dict, dict):
-        return ""
-
-    root = tweet_dict.get("content", "")
-    replies = tweet_dict.get("comments", [])
-    replies_text = "\n".join([f"- {r}" for r in replies if isinstance(r, str)])
-
-    combined = f"TWEET:\n{root}\n\nREPLIES:\n{replies_text}"
-    return combined.strip()
 
 
 def _flatten_news_dict(news_dict: Dict[str, Any]) -> str:
@@ -199,8 +194,9 @@ def normalize_scraped_data(raw_data: Any, source_type: str) -> str:
     if source_type == "reddit_sub":
         return _flatten_reddit_sub_list(raw_data)
 
-    if source_type == "twitter":
-        return _flatten_twitter_dict(raw_data)
+    # TWITTER DISABLED - uncomment to re-enable Twitter scraping
+    # if source_type == "twitter":
+    #     return _flatten_twitter_dict(raw_data)
 
     if source_type == "news":
         return _flatten_news_dict(raw_data)
@@ -254,10 +250,6 @@ def scrape_and_generate_ideas(batch: List[Dict[str, str]]) -> List[str]:
                     "type": "reddit_sub"
                 },
                 {
-                    "url": "https://x.com/someuser/status/1234567890",
-                    "type": "twitter"
-                },
-                {
                     "url": "https://example.com/some-article",
                     "type": "news"
                 },
@@ -301,7 +293,6 @@ def scrape_and_generate_ideas(batch: List[Dict[str, str]]) -> List[str]:
 
 if __name__ == "__main__":
     # small demo batch to show usage:
-    # note: for twitter you MUST have X_BEARER_TOKEN in env or this will raise.
     test_batch = [
     {
         "url": "https://www.reddit.com/r/python/comments/abc123/some_post_title/",
@@ -311,10 +302,11 @@ if __name__ == "__main__":
         "url": "python",
         "type": "reddit_sub"
     },
-    {
-        "url": "https://x.com/elonmusk/status/1786350497877688525",
-        "type": "twitter"
-    },
+    # TWITTER DISABLED - uncomment to test Twitter scraping (requires X_BEARER_TOKEN)
+    # {
+    #     "url": "https://x.com/elonmusk/status/1786350497877688525",
+    #     "type": "twitter"
+    # },
     {
         "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
         "type": "news"

@@ -54,7 +54,15 @@ def build_cluster_graph(clustered_data):
                 G.add_edge(i, j, weight=similarity_matrix[i, j])
 
     # 3. Find communities using link clustering
-    communities = cdlib.algorithms.hierarchical_link_community(G)
+    # Check if graph has edges before running community detection
+    if G.number_of_edges() == 0:
+        # No edges means clusters are too dissimilar - return empty community structure
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"   ⚠️  No edges in cluster graph (all clusters below similarity threshold). Need more diverse data.")
+        communities = type('obj', (object,), {'communities': []})()  # Mock empty communities object
+    else:
+        communities = cdlib.algorithms.hierarchical_link_community(G)
 
     # Extract node communities from edge communities
     cluster_groups = []

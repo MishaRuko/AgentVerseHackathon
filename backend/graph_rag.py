@@ -4,6 +4,7 @@ import faiss
 import numpy as np
 from typing import Dict, List, Tuple, Union
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 
 # Load environment variables from .env file
 load_dotenv()
@@ -13,18 +14,16 @@ load_dotenv()
 # The embeddings are used directly to build a FAISS index, and the summaries are the retrieved texts.
 # The public API is `rag_query(kb: Dict, query: str, top_k: int) -> (answer, contexts)`.
 
-# Config
-EMBED_MODEL = "text-embedding-3-small"
+# Config - Use the same model as clustering.py and graph_builder.py
+EMBED_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
-def embed_query(query: str, model: str = EMBED_MODEL) -> np.ndarray:
-    """Embed a single query string using OpenAI embeddings."""
-    from openai import OpenAI
-    client = OpenAI(api_key=openai.api_key)
-    resp = client.embeddings.create(input=[query], model=model)
-    return np.array(resp.data[0].embedding, dtype="float32")
+def embed_query(query: str, model: SentenceTransformer = EMBED_MODEL) -> np.ndarray:
+    """Embed a single query string using SentenceTransformer to match clustering embeddings."""
+    embedding = model.encode([query])[0]
+    return np.array(embedding, dtype="float32")
 
 
 def build_index_from_kb(kb: Dict[Union[tuple, List], str]):

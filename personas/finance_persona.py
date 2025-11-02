@@ -1,25 +1,25 @@
-# personas/marketing_persona.py
+# personas/finance_persona.py
 
 import json
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
-from .prompts import MARKETING_PERSONA_PROMPT
+from .prompts import FINANCE_PERSONA_PROMPT
 
-def build_marketing_persona_agent(model: OpenAIModel) -> Agent:
+def build_finance_persona_agent(model: OpenAIModel) -> Agent:
     return Agent(
         model=model,
-        name="Marketing Persona",
-        description="Marketing/growth strategist. Can plan info needs and deliver strategy.",
-        system_prompt=MARKETING_PERSONA_PROMPT,
+        name="Finance Persona",
+        description="Finance/investment analyst. Can plan info needs and deliver financial analysis.",
+        system_prompt=FINANCE_PERSONA_PROMPT,
         callback_handler=None,
     )
 
-def make_marketing_persona_tool(persona_agent: Agent):
-    @tool(description="Marketing persona. mode='plan' or 'deliver'. Helps plan enrichment and generate marketing output.")
-    def marketing_persona_agent(mode: str, persona_task: str, kb_size: int, graph_answer_json: str) -> str:
+def make_finance_persona_tool(persona_agent: Agent):
+    @tool(description="Finance persona. mode='plan' or 'deliver'. Helps plan enrichment and generate financial output.")
+    def finance_persona_agent(mode: str, persona_task: str, kb_size: int, graph_answer_json: str) -> str:
         """
         mode: "plan" or "deliver"
-        persona_task: ex. 'draft_marketing_strategy', 'risk_scan'
+        persona_task: ex. 'investment_analysis', 'risk_assessment'
         kb_size: current size of the knowledge base (int)
         graph_answer_json: string from graph_rag_agent(...) with fields:
             - answer
@@ -46,4 +46,4 @@ If MODE is "deliver", respond with final stakeholder-facing narrative (no JSON).
         resp = persona_agent(prompt)
         return str(resp).strip()
 
-    return marketing_persona_agent
+    return finance_persona_agent
