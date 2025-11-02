@@ -1,8 +1,7 @@
-
 import hdbscan
-import numpy as np
 from sentence_transformers import SentenceTransformer
 
+from graph_builder import build_cluster_graph
 from llm import llm
 
 
@@ -14,8 +13,20 @@ def cluster_and_summarize(ideas):
         ideas (list[str]): A list of strings representing the ideas.
 
     Returns:
-        list[dict]: A list of dictionaries, where each dictionary contains the summary, its embedding,
-                    and a list of the original ideas and their embeddings.
+        list[dict]:
+            A list of dictionaries, where each dictionary contains the summary, its embedding, and a list of the original ideas and their embeddings.
+            List format:
+            [
+                {
+                    "summary": str,
+                    "embedding": list[float],
+                    "ideas": [
+                        {"idea": str, "embedding": list[float]},
+                        ...
+                    ]
+                },
+                ...
+            ]
     """
     model = SentenceTransformer('all-MiniLM-L6-v2')
     embeddings = model.encode(ideas)
@@ -66,11 +77,27 @@ if __name__ == '__main__':
         "The payment process is too complicated.",
         "Simplifying the checkout flow should be a priority.",
         "Users are complaining about the app crashing.",
-        "We need to fix the bugs that are causing the crashes."
+        "We need to fix the bugs that are causing the crashes.",
+        "The app is slow to load.",
+        "We need to improve the app's performance.",
+        "The login process is not intuitive.",
+        "Let's make the login flow more user-friendly.",
+        "I want to be able to save my favorite items.",
+        "A wishlist feature would be a great addition.",
+        "The search functionality is not very accurate.",
+        "We should improve the search algorithm.",
+        "The app drains my battery.",
+        "We need to optimize the app for better battery life.",
+        "The navigation bar is cluttered.",
+        "Let's simplify the navigation.",
+        "The app should have a dark mode.",
+        "A dark mode option would be easier on the eyes.",
+        "The app takes up too much storage space.",
+        "We should reduce the app's size."
     ]
 
     clustered_data = cluster_and_summarize(sample_ideas)
-    for item in clustered_data:
-        item["embedding"] = None
-        for subitem in item["ideas"]:
-            subitem["embedding"] = None
+    graph_data = build_cluster_graph(clustered_data)
+    for embedding, description in graph_data.items():
+        print(f"Description: {description}\nEmbedding (first 5 elements): {embedding[:5]}\n---")
+

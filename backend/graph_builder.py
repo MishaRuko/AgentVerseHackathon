@@ -1,87 +1,90 @@
+import os
 
-import json
+import cdlib.algorithms
+import networkx as nx
+import numpy as np
+from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+from strands import Agent
+from strands.models.openai import OpenAIModel
 
-class GraphBuilder:
-    def __init__(self, graph_file="graph.json"):
-        """
-        Initializes the GraphBuilder. Loads an existing graph if available,
-        otherwise starts with an empty graph.
+load_dotenv()
 
-        Args:
-            graph_file: The file path to store/load the graph.
-        """
-        self.graph_file = graph_file
-        self.graph = self._load_graph()
+openai_model = OpenAIModel(model_id="gpt-3.5-turbo")
 
-    def _load_graph(self):
-        """
-        Loads the graph from a JSON file.
-        """
-        try:
-            with open(self.graph_file, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {"nodes": {}, "edges": []}
+agent = Agent(model=openai_model, tools=[], system_prompt="You are a helpful assistant that only generates text. You do not have access to any tools.")
 
-    def _save_graph(self):
-        """
-        Saves the current graph to a JSON file.
-        """
-        with open(self.graph_file, 'w') as f:
-            json.dump(self.graph, f, indent=4)
 
-    def add_or_update_node(self, node_id: str, attributes: dict = None):
-        """
-        Adds a new node or updates an existing node's attributes.
-        """
-        if node_id not in self.graph["nodes"]:
-            self.graph["nodes"][node_id] = {"id": node_id, "attributes": {}}
-        if attributes:
-            self.graph["nodes"][node_id]["attributes"].update(attributes)
-        self._save_graph()
+def build_cluster_graph(clustered_data):
+    """
+    Builds a graph of clusters, finds communities using link clustering, and generates explanations for cluster groups.
 
-    def add_edge(self, source_node_id: str, target_node_id: str, relationship: str, weight: float = 1.0):
-        """
-        Adds an edge between two nodes.
-        """
-        # Ensure both nodes exist before adding an edge
-        if source_node_id not in self.graph["nodes"]:
-            self.add_or_update_node(source_node_id)
-        if target_node_id not in self.graph["nodes"]:
-            self.add_or_update_node(target_node_id)
+    Args:
+        clustered_data (list[dict]):
+            Output from cluster_and_summarize. Output format documented in clustering.py.
 
-        edge = {
-            "source": source_node_id,
-            "target": target_node_id,
-            "relationship": relationship,
-            "weight": weight
-        }
-        self.graph["edges"].append(edge)
-        self._save_graph()
+    Returns:
+        dict: A dictionary mapping combined embedding to long description for each cluster group.
+    """
+    model = SentenceTransformer('all-MiniLM-L6-v2')
 
-    def get_graph(self):
-        """
-        Returns the current graph.
-        """
-        return self.graph
+    cluster_embeddings = [item["embedding"] for item in clustered_data]
+    cluster_summaries = [item["summary"] for item in clustered_data]
 
-if __name__ == '__main__':
-    # Example usage:
-    graph_builder = GraphBuilder(graph_file="test_graph.json")
+    # 1. Build a cosine similarity matrix for the cluster embeddings.
+    similarity_matrix = cosine_similarity(cluster_embeddings)
 
-    # Add some nodes (clusters)
-    graph_builder.add_or_update_node("cluster_0", {"label": "Python Programming"})
-    graph_builder.add_or_update_node("cluster_1", {"label": "Software Development"})
-    graph_builder.add_or_update_node("cluster_2", {"label": "Daily Life"})
+    # Force cosine similarities below a certain threshold to 0 for more meaningful connections
+    meaningful_similarity_threshold = 0.4  # This value can be tuned
+    similarity_matrix[similarity_matrix < meaningful_similarity_threshold] = 0
 
-    # Add some edges (relationships)
-    graph_builder.add_edge("cluster_0", "cluster_1", "related_to", 0.8)
-    graph_builder.add_edge("cluster_1", "cluster_2", "influences", 0.3)
+    # 2. Create a NetworkX graph from the similarity matrix
+    G = nx.Graph()
+    for i in range(len(clustered_data)):
+        G.add_node(i, summary=cluster_summaries[i])
 
-    print("Current Graph:")
-    print(json.dumps(graph_builder.get_graph(), indent=4))
+    # Add edges based on similarity
+    for i in range(len(clustered_data)):
+        for j in range(i + 1, len(clustered_data)):
+            if similarity_matrix[i, j] > 0:  # Only add edges if similarity is greater than 0 after thresholding
+                G.add_edge(i, j, weight=similarity_matrix[i, j])
 
-    # Clean up test file
-    import os
-    if os.path.exists("test_graph.json"):
-        os.remove("test_graph.json")
+    # 3. Find communities using link clustering
+    communities = cdlib.algorithms.hierarchical_link_community(G)
+
+    # Extract node communities from edge communities
+    cluster_groups = []
+    for edge_community in communities.communities:
+        node_community = set()
+        for edge in edge_community:
+            node_community.add(edge[0])
+            node_community.add(edge[1])
+        cluster_groups.append(list(node_community))
+
+    final_results = {}
+    for group_nodes in cluster_groups:  # Iterate over the communities
+        if len(group_nodes) <= 1:
+            continue
+
+        group_summaries = [G.nodes[node]['summary'] for node in group_nodes]
+
+        # 4. For each cluster group, use an LLM to generate an explanation
+        llm_prompt = f"""The following are summaries of related ideas:
+{'- ' + '\n- '.join(group_summaries)}
+
+Explain concisely and succinctly why these ideas are related and provide a brief overarching theme or connection. Do not ramble. The more ideas there are, the more broad/general you should try to make your explanation."""
+
+        group_explanation = agent(llm_prompt)
+
+        # 5. Combine, embed, and add to results
+        combined_description = f"Overarching theme: {group_explanation}\n\nRelated ideas:\n{'- ' + '\n- '.join(group_summaries)}"
+        combined_embedding = model.encode([combined_description])[0]
+
+        final_results[tuple(combined_embedding.tolist())] = combined_description
+
+    # Add individual clusters to the final result
+    for i, item in enumerate(clustered_data):
+        final_results[tuple(item["embedding"].tolist())] = item["summary"]
+
+    return final_results
