@@ -214,19 +214,33 @@ def ideas_from_text(full_text: str) -> List[str]:
     return ideas
 
 
-def scrape_and_generate_ideas(batch: List[Tuple[str, str]]) -> List[str]:
+def scrape_and_generate_ideas(batch: List[Dict[str, str]]) -> List[str]:
     """
     Main entry point.
 
     Args:
         batch: list like:
             [
-                ("https://www.reddit.com/r/whatever/comments/abc123/post_title/", "reddit_post"),
-                ("python", "reddit_sub"),
-                ("https://x.com/someuser/status/1234567890", "twitter"),
-                ("https://example.com/some-article", "news"),
-                ("https://randomblog.com/some-page", "general"),
-                ...
+                {
+                    "url": "https://www.reddit.com/r/whatever/comments/abc123/post_title/",
+                    "type": "reddit_post"
+                },
+                {
+                    "url": "python",
+                    "type": "reddit_sub"
+                },
+                {
+                    "url": "https://x.com/someuser/status/1234567890",
+                    "type": "twitter"
+                },
+                {
+                    "url": "https://example.com/some-article",
+                    "type": "news"
+                },
+                {
+                    "url": "https://randomblog.com/some-page",
+                    "type": "general"
+                }
             ]
 
     Returns:
@@ -234,10 +248,13 @@ def scrape_and_generate_ideas(batch: List[Tuple[str, str]]) -> List[str]:
     """
 
     all_ideas = []
+    print("Scraper Activated")
 
-    for url, source_type in batch:
+    for source in batch:
         # 1. scrape
         try:
+            url = source["url"]
+            source_type = source["type"]
             scraped = scrape_source(url, source_type)
         except Exception as e:
             print(f"[ERROR] scraping {url} ({source_type}): {e}")
@@ -262,21 +279,27 @@ if __name__ == "__main__":
     # small demo batch to show usage:
     # note: for twitter you MUST have X_BEARER_TOKEN in env or this will raise.
     test_batch = [
-        # single reddit post thread
-        ("https://www.reddit.com/r/python/comments/abc123/some_post_title/", "reddit_post"),
-
-        # subreddit (just the name, assuming the scraper expects that)
-        ("python", "reddit_sub"),
-
-        # tweet + replies
-        ("https://x.com/elonmusk/status/1786350497877688525", "twitter"),
-
-        # news/wikipedia/article style
-        ("https://en.wikipedia.org/wiki/Python_(programming_language)", "news"),
-
-        # generic webpage
-        ("https://example.com/", "general"),
-    ]
+    {
+        "url": "https://www.reddit.com/r/python/comments/abc123/some_post_title/",
+        "type": "reddit_post"
+    },
+    {
+        "url": "python",
+        "type": "reddit_sub"
+    },
+    {
+        "url": "https://x.com/elonmusk/status/1786350497877688525",
+        "type": "twitter"
+    },
+    {
+        "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+        "type": "news"
+    },
+    {
+        "url": "https://example.com/",
+        "type": "general"
+    }
+]
 
     ideas = scrape_and_generate_ideas(test_batch)
 
