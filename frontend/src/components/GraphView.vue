@@ -575,10 +575,12 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(31, 38, 135, 0.15);
   z-index: 10000;
   max-width: 300px;
+  max-height: 400px;
   pointer-events: auto;
   word-wrap: break-word;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .annotation-content {
@@ -587,6 +589,30 @@ onUnmounted(() => {
   line-height: 1.5;
   white-space: pre-line;
   margin-bottom: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(10, 186, 181, 0.4) rgba(10, 186, 181, 0.1);
+}
+
+.annotation-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.annotation-content::-webkit-scrollbar-track {
+  background: rgba(10, 186, 181, 0.1);
+  border-radius: 3px;
+}
+
+.annotation-content::-webkit-scrollbar-thumb {
+  background: rgba(10, 186, 181, 0.4);
+  border-radius: 3px;
+}
+
+.annotation-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(10, 186, 181, 0.6);
 }
 
 .annotation-nav {
