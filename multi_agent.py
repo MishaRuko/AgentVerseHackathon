@@ -1,83 +1,215 @@
-from strands import Agent, tool
-from strands.models.openai import OpenAIModel
 import json
 import asyncio
 import sys
 import os
-import requests
-from urllib.parse import quote_plus
-from dotenv import load_dotenv
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 from datetime import datetime
-import asyncio
+from dotenv import load_dotenv
 import yaml
+import requests
 
-# Load environment variables from .env file
+from strands import Agent, tool
+from strands.models.openai import OpenAIModel
+
+# ---------------------------------------------------------------------
+# ENV / PATH SETUP
+# ---------------------------------------------------------------------
+
 load_dotenv()
 
-# Add backend directory to path for imports
+# make sure backend is importable
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
-from graph_rag import rag_query
 
-# This script uses the Strands Agents SDK with the "Agents as Tools" pattern.
-# Each specialist (source selector, scraper, vector DB) is implemented as a 
-# separate Agent, then wrapped as a @tool function so the orchestrator can 
-# invoke them. This follows the multi-agent example from Strands documentation.
+# internal imports from backend modules
+# graph_rag: semantic retrieval over graph KB
+from graph_rag import rag_query  # :contentReference[oaicite:1]{index=1}
 
-# ============================================
-# CONFIGURE OPENAI MODEL
-# ============================================
+# scraper pipeline -> ideas
+import backend.scrapers.scraper_agent as WebScraper  # scrape_and_generate_ideas() :contentReference[oaicite:2]{index=2}
 
-# Make sure OPENAI_API_KEY is set in your environment
-# export OPENAI_API_KEY='your-api-key-here'
+# clustering + summarisation of ideas into clusters
+from clustering import cluster_and_summarize  # :contentReference[oaicite:3]{index=3}
+
+# graph builder to connect related clusters and generate higher-level themes
+from graph_builder import build_cluster_graph  # :contentReference[oaicite:4]{index=4}
+
+# ---------------------------------------------------------------------
+# GLOBAL STATE
+# ---------------------------------------------------------------------
+
+# This is the persistent knowledge base.
+# Keys: tuple(embedding floats)
+# Values: text summary / theme / explanation
+#
+# graph_builder_agent will KEEP ADDING to this.
+# graph_rag_agent will READ from this.
+knowledge_base = {}
+
+
+# ---------------------------------------------------------------------
+# OPENAI MODEL CHOICE
+# ---------------------------------------------------------------------
 
 openai_model = OpenAIModel(
-    model_id="gpt-4o-mini",  # Using gpt-4o-mini for cost efficiency
-    # Alternatively use: "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"
+    model_id="gpt-4o-mini",  # cost-effective but capable
 )
 
-# ============================================
-# LOAD PROMPTS FROM YAML FILE
-# ============================================
+
+# ---------------------------------------------------------------------
+# LOAD PROMPTS
+# ---------------------------------------------------------------------
+#
+# agent_prompts.yaml gives us:
+# - source_selector: generate search queries
+# - scraper: extract atomic ideas from text
+# - graph_rag: synthesize final structured answer from retrieved contexts
+#
+# marketing_strategist.yaml currently defines "orchestrator", but we are going
+# to override / extend that prompt with the new supervisor loop + persona routing.
+#
+# We still load them so we can reuse tone/behavior where helpful.
 
 with open("agent_prompts.yaml", "r") as f:
-    prompts = yaml.safe_load(f)
-    SOURCE_SELECTOR_PROMPT = prompts["source_selector"]
-    SCRAPER_PROMPT = prompts["scraper"]
-    GRAPH_RAG_PROMPT = prompts["graph_rag"]
+    _prompt_yaml = yaml.safe_load(f)
+    SOURCE_SELECTOR_PROMPT = _prompt_yaml["source_selector"]        # :contentReference[oaicite:5]{index=5}
+    SCRAPER_PROMPT = _prompt_yaml["scraper"]                        # :contentReference[oaicite:6]{index=6}
+    GRAPH_RAG_PROMPT = _prompt_yaml["graph_rag"]                    # :contentReference[oaicite:7]{index=7}
 
 with open("marketing_strategist.yaml", "r") as f:
-    prompts = yaml.safe_load(f)
-    SYSTEM_PROMPT = prompts["orchestrator"]
+    _orchestrator_yaml = yaml.safe_load(f)
+    BASE_ORCHESTRATOR_PROMPT = _orchestrator_yaml["orchestrator"]   # :contentReference[oaicite:8]{index=8}
 
-# ============================================
-# IMPORT SPECIALISED AGENTS 
-# ============================================
 
-import backend.scrapers.scraper_agent as WebScraper
+# ---------------------------------------------------------------------
+# PERSONA PROMPTS
+# ---------------------------------------------------------------------
+#
+# We support multiple outward-facing personas.
+# The Supervisor will figure out who should "speak" in the final answer.
+#
+# You can (and should) tune these.
 
-# ============================================
-# GOOGLE SEARCH HELPER FUNCTIONS
-# ============================================
+MARKETING_PERSONA_PROMPT = """
+You are the Marketing Strategy Persona.
+
+Audience:
+- brand / growth / social / campaign / product marketing teams
+
+Voice:
+- practical
+- insight-led
+- focuses on audiences, channels, messaging angles, competitor positioning
+
+Your job:
+1. Take structured analytical findings about trends, sentiment clusters, communities, etc.
+2. Turn that into advice like:
+   - how to position messaging
+   - which audiences to target
+   - what narratives are gaining traction or are risky
+3. Be concrete. Talk like a strategist in a meeting deck.
+
+When you answer:
+- You MAY reference trends, communities, or sentiments.
+- You MAY suggest tactical next steps.
+- Do NOT invent data that you weren't given.
+- Do NOT leak internal tool names. Just say "our analysis" or "what we're seeing online".
+"""
+
+IB_PERSONA_PROMPT = """
+You are the Investment / Finance Persona.
+
+Audience:
+- investors, corporate strategy, M&A, competitive intelligence, leadership teams
+
+Voice:
+- analytical, clarity-first, not hype
+- talks in terms of risk, upside, sentiment pressure, regulatory perception, market narrative
+
+Your job:
+1. Take structured analytical findings about trends, clusters, narratives, and perception.
+2. Frame them as:
+   - reputational risk
+   - market confidence / skepticism
+   - early signals of regulatory / PR / consumer backlash
+   - competitor advantage angles
+3. If relevant, mention what stakeholders (consumers, regulators, tech community, etc.) are saying.
+
+When you answer:
+- Be concise and boardroom-friendly.
+- Do NOT fabricate numbers or financial projections.
+- Do NOT leak internal tool names. Call it "the analysis".
+"""
+
+
+# ---------------------------------------------------------------------
+# HELPER: SOURCE TYPE INFERENCE FOR GOOGLE RESULTS
+# ---------------------------------------------------------------------
+
+def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
+    """
+    Map a URL to a scraping mode expected by scrape_source():
+    "reddit_post", "reddit_sub", "twitter", "news", "general".
+    Heuristics adapted from original code.
+    """
+
+    if not url:
+        return "general"
+
+    parsed = urlparse(url)
+    netloc = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    title = (title or "").lower()
+    snippet = (snippet or "").lower()
+
+    # Reddit
+    if "reddit.com" in netloc or "redd.it" in netloc:
+        if "/comments/" in path or re.search(r"/comments/[a-z0-9]+", path):
+            return "reddit_post"
+        if re.search(r"^/r/[^/]+/?", path) or re.search(r"^/r/[^/]+/(hot|new|top)", path):
+            return "reddit_sub"
+        return "reddit_sub"
+
+    # Twitter / X
+    if "twitter.com" in netloc or "x.com" in netloc:
+        return "twitter"
+
+    # Wikipedia / similar → treat as news/article-like
+    if "wikipedia.org" in netloc:
+        return "news"
+
+    # News-like heuristics
+    news_indicators = ["news", "article", "/articles/", "/202", "/story", "press", "opinion"]
+    if any(ind in path for ind in news_indicators) or any(ind in title or ind in snippet for ind in news_indicators):
+        return "news"
+
+    known_news_domains = {
+        "nytimes.com",
+        "theguardian.com",
+        "bbc.co.uk",
+        "cnn.com",
+        "washingtonpost.com"
+    }
+    if any(d in netloc for d in known_news_domains):
+        return "news"
+
+    return "general"
+
+
+# ---------------------------------------------------------------------
+# GOOGLE SEARCH HELPER
+# ---------------------------------------------------------------------
 
 def google_search(query: str, num_results: int = 3) -> list:
     """
-    Perform a Google search and return top results.
-    Uses Google Custom Search JSON API.
-    
-    To use this, you need:
-    1. GOOGLE_API_KEY environment variable
-    2. GOOGLE_CSE_ID (Custom Search Engine ID) environment variable
-    
-    Get these from: https://developers.google.com/custom-search/v1/overview
+    Google Custom Search API helper. Falls back to mock if creds missing.
     """
+
     api_key = os.environ.get("GOOGLE_API_KEY")
     cse_id = os.environ.get("GOOGLE_CSE_ID")
-    
+
     if not api_key or not cse_id:
-        print(f"  ⚠ Google API credentials not set, using mock results for: {query}")
-        # Return mock results for demo purposes
+        # fallback mock
         return [
             {
                 "title": f"Result 1 for '{query}'",
@@ -90,18 +222,15 @@ def google_search(query: str, num_results: int = 3) -> list:
                 "url": f"https://example.com/result2?q={quote_plus(query)}",
                 "snippet": f"Additional information about {query}...",
                 "type": "general"
-
             },
             {
                 "title": f"Result 3 for '{query}'",
                 "url": f"https://example.com/result3?q={quote_plus(query)}",
                 "snippet": f"More details about {query}...",
                 "type": "general"
-
             }
         ][:num_results]
-    
-    # Make actual Google search API call
+
     try:
         url = "https://www.googleapis.com/customsearch/v1"
         params = {
@@ -110,302 +239,427 @@ def google_search(query: str, num_results: int = 3) -> list:
             "q": query,
             "num": num_results
         }
-        
+
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-        
+
         results = []
         for item in data.get("items", [])[:num_results]:
             title = item.get("title", "")
             link = item.get("link", "")
             snippet = item.get("snippet", "")
-            res = {
+            results.append({
                 "title": title,
                 "url": link,
                 "snippet": snippet,
-                "type": infer_source_type(link, title, snippet)
-            }
-            results.append(res)
-        
+                "type": infer_source_type(link, title, snippet),
+            })
         return results
+
     except Exception as e:
-        print(f"  ⚠ Google search error: {e}, using mock results")
-        return google_search(query, num_results)  # Fallback to mock
+        # fallback to mock
+        return google_search(query, num_results)
 
 
-def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
-    """
-    Heuristic classifier mapping a search result to the scraper type used by
-    backend.scrapers.scraper_agent.scrape_source:
-        - "reddit_post", "reddit_sub", "twitter", "news", "general"
-    """
-    if not url:
-        return "general"
+# ---------------------------------------------------------------------
+# SPECIALIST AGENT INSTANCES
+# ---------------------------------------------------------------------
 
-    parsed = urlparse(url)
-    netloc = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-    title = (title or "").lower()
-    snippet = (snippet or "").lower()
-
-    # Reddit: comment thread vs subreddit listing
-    if "reddit.com" in netloc or "redd.it" in netloc:
-        if "/comments/" in path or re.search(r"/comments/[a-z0-9]+", path):
-            return "reddit_post"
-        if re.search(r"^/r/[^/]+/?", path) or re.search(r"^/r/[^/]+/(hot|new|top)", path):
-            return "reddit_sub"
-        # fallback reddit -> treat as subreddit listing
-        return "reddit_sub"
-
-    # Twitter / X
-    if "twitter.com" in netloc or "x.com" in netloc:
-        if "/status/" in path:
-            return "twitter"
-        # if it's a profile or search, still treat as general (or add 'twitter' if desired)
-        return "twitter"
-
-    # Wikipedia / encyclopedic -> map to 'news' (your scraper expects 'news' for wiki-style)
-    if "wikipedia.org" in netloc:
-        return "news"
-
-    # Heuristics for news sites (domain or path indicators)
-    news_indicators = ["news", "article", "/articles/", "/202", "/story", "press", "opinion"]
-    if any(ind in path for ind in news_indicators) or any(ind in title or ind in snippet for ind in news_indicators):
-        return "news"
-
-    # Some known news domains - expand as needed
-    known_news_domains = {"nytimes.com", "theguardian.com", "bbc.co.uk", "cnn.com", "washingtonpost.com"}
-    if any(d in netloc for d in known_news_domains):
-        return "news"
-
-    # Fallback to general webpage
-    return "general"
-
-# ============================================
-# CREATE SPECIALIST AGENT INSTANCES
-# ============================================
-
-# Create the specialist agents (these are actual Agent objects using OpenAI)
 _source_selector_agent_instance = Agent(
     model=openai_model,
     name="Source Selector",
-    description="Analyzes queries and identifies relevant information sources",
+    description="Generates targeted search queries for multiple source types.",
     system_prompt=SOURCE_SELECTOR_PROMPT,
-    callback_handler=None
+    callback_handler=None,
 )
 
 _scraper_agent_instance = Agent(
     model=openai_model,
     name="Web Scraper",
-    description="Scrapes content from provided sources",
+    description="Extracts atomic ideas from raw sources.",
     system_prompt=SCRAPER_PROMPT,
-    callback_handler=None
+    callback_handler=None,
 )
 
 _graph_rag_agent_instance = Agent(
     model=openai_model,
-    name="Graph RAG Manager",
-    description="Builds knowledge base from documents and answers queries using graph RAG",
+    name="Graph RAG Synthesizer",
+    description="Synthesizes an answer from retrieved graph/cluster contexts.",
     system_prompt=GRAPH_RAG_PROMPT,
-    callback_handler=None
+    callback_handler=None,
+)
+
+_marketing_persona_agent_instance = Agent(
+    model=openai_model,
+    name="Marketing Persona",
+    description="Turns raw trend intelligence into actionable marketing strategy.",
+    system_prompt=MARKETING_PERSONA_PROMPT,
+    callback_handler=None,
+)
+
+_investment_banking_persona_agent_instance = Agent(
+    model=openai_model,
+    name="Finance Persona",
+    description="Frames trend intelligence in terms of risk, market sentiment, competitive posture.",
+    system_prompt=IB_PERSONA_PROMPT,
+    callback_handler=None,
 )
 
 
-# ============================================
-# WRAP AGENTS AS TOOLS FOR ORCHESTRATOR
-# ============================================
+# ---------------------------------------------------------------------
+# TOOL WRAPPERS
+# ---------------------------------------------------------------------
 
-@tool(description="Generates search queries and finds relevant sources via Google search.")
-def source_selector_agent(query: str) -> str:
+@tool(description="Generate 3 diverse Google queries, then gather top sources for each.")
+def source_selector_agent(user_query: str) -> str:
     """
-    Invokes the Source Selector Agent to:
-    1. Generate 3 different Google search queries
-    2. Search Google for each query
-    3. Return top 3 results per query (9 total URLs)
+    1. Ask the Source Selector agent to generate EXACTLY 3 search queries as a JSON array.
+    2. Run google_search for each query (top 3 results).
+    3. Return list of {url, type} objects as JSON: {\"sources\": [{\"url\":...,\"type\":...}, ...]}
     """
-    print("→ Source Selector Agent activated")
-    print(f"  📝 User query: {query}")
-    
     try:
-        # Step 1: Ask agent to generate 3 search queries
-        result = _source_selector_agent_instance(query)
-        response_text = str(result).strip()
-        
-        print(f"  🤖 Agent generated queries: {response_text[:150]}...")
-        
-        # Parse the search queries from agent response
-        search_queries = json.loads(response_text)
-        
-        if not isinstance(search_queries, list) or len(search_queries) != 3:
-            raise ValueError("Agent must return exactly 3 search queries as a JSON array")
-        
-        print(f"  ✓ Generated {len(search_queries)} search queries")
-        
-        # Step 2: Search Google for each query
+        result = _source_selector_agent_instance(user_query)
+        queries = json.loads(str(result).strip())
+
         all_sources = []
-        for i, search_query in enumerate(search_queries, 1):
-            print(f"  🔍 Searching Google [{i}/3]: {search_query}")
-            results = google_search(search_query, num_results=3)
-            
-            # Add results to sources list
-            for result in results:
+        for q in queries:
+            search_results = google_search(q, num_results=3)
+            for r in search_results:
                 all_sources.append({
-                    "url": result["url"],
-                    "type": result["type"]
+                    "url": r["url"],
+                    "type": r["type"],
                 })
-        
-        print(f"  ✓ Found {len(all_sources)} total sources")
-        
+
         return json.dumps({"sources": all_sources})
-        
     except Exception as e:
-        print(f"  ⚠ Error: {type(e).__name__}: {str(e)[:100]}")
-        print(f"  → Using fallback with generic search queries")
-        
-        # Fallback: Generate basic search queries
+        # fallback if the agent didn't return valid JSON
         fallback_queries = [
-            query,
-            f"{query} latest news",
-            f"{query} discussion forum"
+            user_query,
+            f"{user_query} latest discussion",
+            f"{user_query} controversy reddit"
         ]
-        
         all_sources = []
-        for search_query in fallback_queries:
-            results = google_search(search_query, num_results=3)
-            for result in results:
+        for fq in fallback_queries:
+            for r in google_search(fq, num_results=3):
                 all_sources.append({
-                    "url": result["url"],
-                    "type": "web"
+                    "url": r["url"],
+                    "type": infer_source_type(r["url"], r.get("title",""), r.get("snippet","")),
                 })
-        
         return json.dumps({"sources": all_sources})
 
 
-@tool(description="Scrapes content from provided sources and returns structured documents.")
+@tool(description="Scrape provided sources and extract atomic 'ideas' statements for clustering.")
 async def scraper_agent(sources_json: str) -> str:
     """
-    Uses the WebScraper class to scrape content from sources.
-    Returns structured documents in JSON format.
+    Input:
+        sources_json: '{"sources":[{"url":"...","type":"reddit_post"}, ...]}'
+    Output:
+        JSON: {"ideas": ["idea1", "idea2", ...]}
+
+    Uses scrape_and_generate_ideas() to crawl and LLM-extract atomic ideas
+    from Reddit/Twitter/news/general pages. :contentReference[oaicite:9]{index=9}
     """
-
-    print("→ Scraper Agent activated")
-
     try:
         payload = json.loads(sources_json)
-        sources = payload.get("sources") if isinstance(payload, dict) else payload
-        sources = sources or []
+        sources = payload.get("sources", [])
     except Exception:
         sources = []
 
-    # ensure each source is the expected shape for scrape_and_generate_ideas:
-    # list of {"url": "...", "type": "..."}
-    # (source_selector_agent should already produce that)
-    # Call the synchronous function in a thread pool so we don't block the event loop
+    # scrape_and_generate_ideas is sync, so run it in a thread to not block event loop
     loop = asyncio.get_running_loop()
-    try:
-        LoI = await loop.run_in_executor(
-            None,
-            WebScraper.scrape_and_generate_ideas,
-            sources
-        )
+    ideas_list = await loop.run_in_executor(
+        None,
+        WebScraper.scrape_and_generate_ideas,
+        sources
+    )
 
-        print(LoI)
-        return json.dumps(LoI)
+    return json.dumps({"ideas": ideas_list})
 
-    except Exception as e:
-        print(f"  ⚠ scrape failure: {e}")
-        LoI = []
-        return json.dumps(LoI)
 
-@tool(description="Answers queries using Graph RAG by searching a knowledge base and synthesizing answers.")
-def graph_rag_agent(kb: dict, query: str) -> str:
+@tool(description="Cluster ideas, build/expand the global knowledge graph, and update the shared knowledge base.")
+def graph_builder_agent(ideas_json: str) -> str:
     """
-    Uses graph_rag.py to query a knowledge base and synthesize an answer.
-    
-    This agent:
-    1. Takes a pre-built knowledge base (dict of embedding:text pairs)
-    2. Uses rag_query() to retrieve relevant contexts via semantic search
-    3. Passes the contexts to the LLM agent to synthesize a comprehensive answer
-    
-    Args:
-        kb: Pre-built knowledge base dictionary {embedding_tuple: text_string}
-            Where embedding_tuple is a tuple of floats (from OpenAI embeddings)
-        query: User query string to answer
-    
-    Returns:
-        JSON string with answer, confidence, and retrieved contexts
-    """
-    print(f"→ Graph RAG Agent activated")
-    print(f"  🔍 Query: '{query}'")
-    
-    try:
-        if not kb or not isinstance(kb, dict):
-            return json.dumps({"error": "Knowledge base must be a non-empty dictionary"})
-        
-        print(f"  � Knowledge base size: {len(kb)} documents")
-        
-        # Retrieve relevant contexts using graph_rag
-        contexts = rag_query(kb, query, top_k=3)
-        
-        print(f"  ✓ Retrieved {len(contexts)} relevant contexts")
-        
-        # Use the agent to synthesize an answer from contexts
-        context_texts = [ctx["text"] for ctx in contexts]
-        prompt = f"""Based on the following retrieved contexts, answer the user's query.
+    Input:
+        ideas_json: '{"ideas":["...", "...", ...]}'
 
-User Query: {query}
+    Steps:
+    1. Cluster raw idea strings and summarize each cluster. (cluster_and_summarize) :contentReference[oaicite:10]{index=10}
+    2. Build a similarity graph of clusters, detect higher-level communities,
+       and generate overarching theme explanations. (build_cluster_graph) :contentReference[oaicite:11]{index=11}
+    3. Convert those clusters + community themes into embeddings->text entries.
+    4. Merge them into the global knowledge_base dict.
+
+    Output:
+        JSON: {
+          "kb_size": <int>,
+          "clusters_added": <int>,
+          "status": "ok"
+        }
+    """
+    global knowledge_base
+
+    try:
+        payload = json.loads(ideas_json)
+        ideas = payload.get("ideas", [])
+    except Exception:
+        ideas = []
+
+    # If nothing to add, just report current KB size
+    if not ideas:
+        return json.dumps({
+            "kb_size": len(knowledge_base),
+            "clusters_added": 0,
+            "status": "no_ideas"
+        })
+
+    # 1. cluster_and_summarize -> list of {summary, embedding, ideas:[{idea, embedding}, ...]}
+    clustered_data = cluster_and_summarize(ideas)  # :contentReference[oaicite:12]{index=12}
+
+    # 2. build_cluster_graph -> (embedding_to_explanation, group_to_explanation, sim_matrix)
+    embedding_to_explanation, group_to_explanation, _sim = build_cluster_graph(clustered_data)  # :contentReference[oaicite:13]{index=13}
+
+    # 3. Merge into global KB.
+    # embedding_to_explanation already maps tuple(embedding) -> text summary/theme
+    added = 0
+    for emb_tuple, text_block in embedding_to_explanation.items():
+        # emb_tuple is tuple(float,...)
+        # text_block is explanation string
+        # we just overwrite or insert
+        if emb_tuple not in knowledge_base:
+            added += 1
+        knowledge_base[emb_tuple] = text_block
+
+    return json.dumps({
+        "kb_size": len(knowledge_base),
+        "clusters_added": added,
+        "status": "ok"
+    })
+
+
+@tool(description="Query the global knowledge base using Graph RAG and synthesize an answer.")
+def graph_rag_agent(user_query: str) -> str:
+    """
+    Input:
+        user_query: "string question from supervisor"
+    Behavior:
+        1. Use rag_query(...) to retrieve top contexts from knowledge_base. :contentReference[oaicite:14]{index=14}
+        2. Ask the _graph_rag_agent_instance (LLM with GRAPH_RAG_PROMPT) to synthesize an answer
+           ONLY using those contexts (like in agent_prompts.yaml graph_rag spec). :contentReference[oaicite:15]{index=15}
+    Output:
+        JSON:
+        {
+            "answer": "...",
+            "sources_used": n,
+            "confidence": "high|medium|low",
+            "contexts": [...]
+        }
+    """
+    global knowledge_base
+
+    if not knowledge_base:
+        return json.dumps({
+            "answer": "No knowledge available yet.",
+            "sources_used": 0,
+            "confidence": "low",
+            "contexts": []
+        })
+
+    # 1. retrieve top-K contexts from KB
+    contexts = rag_query(knowledge_base, user_query, top_k=3)  # returns list[{"text","index","score"}, ...] :contentReference[oaicite:16]{index=16}
+
+    # 2. build synthesis prompt for the Graph RAG agent
+    context_texts = [ctx["text"] for ctx in contexts]
+    synthesis_prompt = f"""
+You are the Graph RAG synthesis specialist.
+
+User Query: {user_query}
 
 Retrieved Contexts:
 {json.dumps(context_texts, indent=2)}
 
-Provide a comprehensive answer based on these contexts. Return ONLY a JSON object with this format:
+Follow your system instructions. Return ONLY a JSON object with:
 {{
     "answer": "your comprehensive answer here",
     "sources_used": <number of contexts used>,
     "confidence": "high/medium/low"
 }}
 """
-        
-        result = _graph_rag_agent_instance(prompt)
-        response_text = str(result).strip()
-        
-        # Try to parse as JSON
-        try:
-            answer_data = json.loads(response_text)
-            answer_data["contexts"] = contexts  # Add retrieved contexts
-            return json.dumps(answer_data)
-        except:
-            # Fallback if agent doesn't return valid JSON
-            return json.dumps({
-                "answer": response_text,
-                "contexts": contexts,
-                "sources_used": len(contexts),
-                "confidence": "medium"
-            })
-        
-    except Exception as e:
-        print(f"  ⚠ Error in Graph RAG Agent: {type(e).__name__}: {str(e)}")
-        return json.dumps({"error": str(e)})
+
+    llm_raw = _graph_rag_agent_instance(synthesis_prompt)
+    llm_text = str(llm_raw).strip()
+
+    # try to parse valid JSON from the persona
+    try:
+        parsed = json.loads(llm_text)
+    except Exception:
+        parsed = {
+            "answer": llm_text,
+            "sources_used": len(contexts),
+            "confidence": "medium",
+        }
+
+    parsed["contexts"] = contexts
+    return json.dumps(parsed)
 
 
-# ============================================
-# ORCHESTRATOR AGENT
-# ============================================
+@tool(description="Format final insights for a marketing stakeholder. Input is the raw analytical answer JSON from graph_rag_agent.")
+def marketing_persona_agent(answer_json: str) -> str:
+    """
+    Input:
+        answer_json: stringified JSON from graph_rag_agent() with fields:
+            answer, sources_used, confidence, contexts
+
+    Output:
+        A plain-English narrative aimed at marketing / growth / brand teams.
+    """
+    try:
+        payload = json.loads(answer_json)
+    except Exception:
+        payload = {"answer": answer_json}
+
+    # Build a prompt for the marketing persona agent
+    persona_prompt = f"""
+You are the Marketing Strategy Persona.
+
+Here is the structured trend analysis you need to translate:
+{json.dumps(payload, indent=2)}
+
+Rewrite this for a marketing/growth audience:
+- identify what audiences are saying / feeling
+- highlight opportunities and risks in messaging, positioning, channels
+- suggest 2-3 next steps
+- DO NOT invent new facts that are not implied by the analysis
+    """.strip()
+
+    resp = _marketing_persona_agent_instance(persona_prompt)
+    return str(resp).strip()
+
+
+@tool(description="Format final insights for an investment / finance stakeholder. Input is the raw analytical answer JSON from graph_rag_agent.")
+def ib_persona_agent(answer_json: str) -> str:
+    """
+    Input:
+        answer_json: stringified JSON from graph_rag_agent() with fields:
+            answer, sources_used, confidence, contexts
+
+    Output:
+        A plain-English narrative aimed at investors / corp strat / finance.
+    """
+    try:
+        payload = json.loads(answer_json)
+    except Exception:
+        payload = {"answer": answer_json}
+
+    persona_prompt = f"""
+You are the Investment / Finance Persona.
+
+Here is the structured trend analysis you need to translate:
+{json.dumps(payload, indent=2)}
+
+Rewrite this for an investor / exec / finance audience:
+- talk in terms of perceived risk, market sentiment, regulatory pressure, competitive posture
+- explain why this matters for valuation / reputation / approach
+- keep it executive and concise
+- DO NOT invent any numerical projections or financials
+    """.strip()
+
+    resp = _investment_banking_persona_agent_instance(persona_prompt)
+    return str(resp).strip()
+
+
+# ---------------------------------------------------------------------
+# ORCHESTRATOR (SUPERVISOR)
+# ---------------------------------------------------------------------
+#
+# We now define the actual Supervisor agent.
+#
+# The Supervisor's job:
+#
+# 1. Understand the user's question.
+# 2. Decide which persona should answer (marketing_persona_agent vs ib_persona_agent, etc.).
+#    - Marketing if the question is about campaigns, positioning, audience, comms, reputation with consumers.
+#    - Finance if the question is about valuation, investor sentiment, competitive risk, regulatory outlook.
+#
+# 3. Try to answer from existing knowledge_base:
+#    - Call graph_rag_agent(user_query)
+#    - If confidence == "high", skip scraping.
+#
+# 4. If confidence is "medium" or "low", or the info is clearly missing / outdated:
+#    - Call source_selector_agent(user_query) to get candidate sources.
+#    - Call scraper_agent(...) on those sources to extract atomic ideas.
+#    - Call graph_builder_agent(...) to cluster, build/expand graph, and update global KB.
+#    - Call graph_rag_agent(user_query) AGAIN to get a better answer.
+#
+# 5. Take the final answer JSON from graph_rag_agent and send it to the chosen persona tool
+#    (marketing_persona_agent or ib_persona_agent). Return ONLY that persona output to the user.
+#
+# IMPORTANT FOR THE LLM:
+# - The Supervisor should not speak directly in analyst voice. It should ALWAYS run a persona tool
+#   for the final wording.
+# - The Supervisor should return ONLY what the persona tool returns.
+
+SUPERVISOR_PROMPT = f"""
+You are the Supervisor Orchestrator.
+
+Your responsibilities:
+1. Figure out the user's intent and which persona should address them:
+   - If the question is about branding, messaging, audience perception, campaign strategy,
+     social media playbooks, creator marketing → use marketing_persona_agent.
+   - If the question is about investor risk, market sentiment, regulatory pressure,
+     competitor position, valuation narrative → use ib_persona_agent.
+
+2. ALWAYS attempt to ground the answer in evidence from the knowledge graph / knowledge base.
+   You query it via graph_rag_agent.
+
+3. Your decision loop is:
+   a) Call graph_rag_agent(user_query).
+   b) Examine its JSON. If confidence is "high", continue.
+   c) If confidence is "medium" or "low", or if the analysis seems incomplete:
+      i.   Call source_selector_agent(user_query) to get sources.
+      ii.  Call scraper_agent(...) on that result to get ideas.
+      iii. Call graph_builder_agent(...) on that result to expand the global knowledge base.
+      iv.  Call graph_rag_agent(user_query) AGAIN to get an updated answer.
+
+4. Once you have the final graph_rag_agent JSON output, DO NOT answer directly.
+   Instead:
+   - Call the correct persona tool (marketing_persona_agent or ib_persona_agent),
+     passing in the JSON string you got from graph_rag_agent.
+   - Return ONLY what the persona tool returns. No extra wrapping.
+
+5. VERY IMPORTANT:
+   - You NEVER reveal internal tool names to the user.
+   - You NEVER dump raw embeddings or raw contexts to the user.
+   - You NEVER say "my confidence is X" unless the persona wording naturally implies uncertainty.
+   - You NEVER invent facts not supported by the analysis.
+
+Tools you can call:
+- source_selector_agent(user_query: str) -> JSON {"sources":[{"url": "...", "type": "..."}]}
+- scraper_agent(sources_json: str) -> JSON {"ideas":[...]}
+- graph_builder_agent(ideas_json: str) -> JSON { "kb_size": int, "clusters_added": int, "status": "ok" }
+- graph_rag_agent(user_query: str) -> JSON {"answer": "...", "sources_used": n, "confidence": "...", "contexts":[...]}
+- marketing_persona_agent(answer_json: str) -> str
+- ib_persona_agent(answer_json: str) -> str
+
+Follow the loop above to produce your final response.
+""".strip()
+
 
 def _build_orchestrator() -> Agent:
     """
-    Create the main orchestrator Agent that coordinates the specialist agents.
-    
-    The orchestrator has access to three specialist agents (wrapped as tools)
-    and can invoke them to complete complex workflows.
+    Build the Supervisor agent with access to all tools including personas.
     """
-    system_prompt = SYSTEM_PROMPT
-
     orchestrator = Agent(
         model=openai_model,
-        system_prompt=system_prompt,
-        tools=[source_selector_agent, scraper_agent, graph_rag_agent],
-        callback_handler=None
+        system_prompt=SUPERVISOR_PROMPT,
+        tools=[
+            source_selector_agent,
+            scraper_agent,
+            graph_builder_agent,
+            graph_rag_agent,
+            marketing_persona_agent,
+            ib_persona_agent,
+        ],
+        callback_handler=None,
     )
     return orchestrator
