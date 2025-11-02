@@ -107,6 +107,9 @@ def scrape_source(url: str, source_type: str) -> Any:
     #         }
     #     return twitter_scraper.get_post_and_replies(url, bearer_token, max_results=50)
 
+    elif source_type == "unsupported_tiktok":
+        return None
+
     else:
         raise ValueError(f"Unknown source_type '{source_type}'")
 
@@ -272,6 +275,8 @@ def scrape_and_generate_ideas(batch: List[Dict[str, str]]) -> List[str]:
             url = source["url"]
             source_type = source["type"]
             scraped = scrape_source(url, source_type)
+            if scraped is None:
+                continue
         except Exception as e:
             print(f"[ERROR] scraping {url} ({source_type}): {e}")
             continue

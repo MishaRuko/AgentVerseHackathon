@@ -61,6 +61,9 @@ def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
             return "reddit_sub"
         return "reddit_sub"
 
+    if "tiktok.com" in netloc:
+        return "unsupported_tiktok"
+
     # TWITTER DISABLED - uncomment to re-enable Twitter scraping
     # if "twitter.com" in netloc or "x.com" in netloc:
     #     return "twitter"
@@ -218,9 +221,12 @@ def run_source_selector(user_query: str) -> dict:
     all_sources = []
     for i, q in enumerate(queries[:3], 1):
         logger.info(f"   🔎 Query {i}: {q}")
-        results = google_search(q, num_results=3)
+        results = google_search(q, num_results=3)  # Reverted to 3 to avoid slowness
         logger.info(f"      Found {len(results)} results")
         for r in results:
+            if r["type"] == "unsupported_tiktok":
+                logger.info(f"      Unsupported source found and skipped: {r['url']}")
+                continue
             all_sources.append({
                 "url": r["url"],
                 "type": r["type"],
