@@ -1,28 +1,26 @@
-import json
-import asyncio
-import sys
 import os
+import sys
+import json
 import re
+import asyncio
+import requests
+import yaml
 from urllib.parse import quote_plus, urlparse
 from dotenv import load_dotenv
-import yaml
-import requests
-
-from strands import Agent, tool
+from strands import Agent
 from strands.models.openai import OpenAIModel
 
-# -------------------------------------------------
-# setup imports / globals same as before
-# -------------------------------------------------
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+BACKEND_DIR = os.path.join(REPO_ROOT, "backend")
+if BACKEND_DIR not in sys.path:
+    sys.path.append(BACKEND_DIR)
 
 load_dotenv()
-sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
 from graph_rag import rag_query
-import backend.scrapers.scraper_agent as WebScraper
+import scrapers.scraper_agent as WebScraper
 from clustering import cluster_and_summarize
 from graph_builder import build_cluster_graph
-
 from personas import (
     build_marketing_persona_agent,
     make_marketing_persona_tool,
@@ -30,31 +28,19 @@ from personas import (
     make_finance_persona_tool,
 )
 
-knowledge_base = {}
+with open(os.path.join(REPO_ROOT, "system_prompt.yaml"), "r") as f:
+    _sys_yaml = yaml.safe_load(f)
+    SUPERVISOR_PROMPT = _sys_yaml["supervisor"]
 
-openai_model = OpenAIModel(
-    model_id="gpt-4o-mini",
-)
-
-with open("agent_prompts.yaml", "r") as f:
+with open(os.path.join(REPO_ROOT, "agent_prompts.yaml"), "r") as f:
     _p = yaml.safe_load(f)
     SOURCE_SELECTOR_PROMPT = _p["source_selector"]
     SCRAPER_PROMPT = _p["scraper"]
     GRAPH_RAG_PROMPT = _p["graph_rag"]
 
-# This will give tone etc. if you want to later condition routing
-with open("marketing_strategist.yaml", "r") as f:
+with open(os.path.join(REPO_ROOT, "marketing_strategist.yaml"), "r") as f:
     _o = yaml.safe_load(f)
     BASE_ORCHESTRATOR_PROMPT = _o["orchestrator"]
-
-with open("system_prompt.yaml", "r") as f:
-    _sys = yaml.safe_load(f)
-    SUPERVISOR_PROMPT = _sys["supervisor"]
-
-with open("system_prompt.yaml", "r") as f:
-    _sys = yaml.safe_load(f)
-    SUPERVISOR_PROMPT = _sys["supervisor"]
-
 
 # -------------------------------------------------
 # util functions same as before (infer_source_type, google_search)
