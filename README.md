@@ -3,6 +3,7 @@
 This repository provides a lightweight pipeline for collecting, clustering and analysing social / news signals and producing persona-driven stakeholder outputs.
 
 High-level pieces you will interact with:
+
 - backend: Python FastAPI service that runs the orchestration and exposes a single query endpoint.
 - multi-agent orchestration: `multi_agent.py` contains the core pipeline (source selection → scraping → clustering → graph RAG → persona planning/delivery).
 - frontend: a minimal Vue 3 app (in `frontend/`) that visualises graphs and can call the backend API.
@@ -23,12 +24,14 @@ This README documents how to run and develop with the current code. The `protala
 
 ## Environment variables
 
-Create a `.env` file in the repository root (or set these in your shell). Minimal useful vars:
+Create a `.env` file in the `backend` directory (or set these in your shell). Set the following:
 
-- `OPENAI_API_KEY` — required for LLM calls (Strands/OpenAI usage in the project).
-- `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` — optional, used by the Google Custom Search fallback; if not set, the code returns mocked search results.
-
-There may be other optional variables (e.g., Strands-specific configuration) depending on your local setup — the code primarily expects `OPENAI_API_KEY` for LLM calls.
+```
+GOOGLE_API_KEY = XXX
+GOOGLE_CSE_ID = XXX
+OPENAI_API_KEY = XXX
+X_BEARER_TOKEN = XXX
+```
 
 ## Backend — install and run
 
@@ -36,8 +39,6 @@ There may be other optional variables (e.g., Strands-specific configuration) dep
 
 ```cmd
 cd backend
-python -m venv .venv
-.\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -45,16 +46,15 @@ pip install -r requirements.txt
 
 ```cmd
 cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python3 main.py
 ```
-
-Or run `python main.py` which will also start uvicorn when executed directly.
 
 3. The main API endpoint is:
 
 - POST /ask — Body: `{ "query": "What's happening with product X" }` → Response: `{ "answer": "..." }`.
 
 Notes and behavior:
+
 - The backend keeps an in-memory `knowledge_base` while running; repeated /ask requests may cause the orchestrator to scrape and enrich the KB.
 - The orchestrator (`multi_agent.py`) uses Strands agents and the persona tooling in `personas/` to route and generate persona-specific outputs.
 
@@ -70,45 +70,20 @@ npm run dev
 
 Open the dev server URL printed by Vite (usually http://localhost:5173). The frontend components use `vis-network` / `vis-data` to render graphs and call the backend `/ask` endpoint for analysis.
 
+The frontend now displays the persona of the agent responding to the query, with different colors for each persona.
+
 ## Development notes & how the pipeline works
 
 - Request flow (simplified):
   1. Client calls `/ask` with a user query.
- 2. `multi_agent.py` routes the query to a persona (marketing or finance) using a small supervisor agent.
- 3. The system tries a RAG lookup against the in-memory KB (`backend/graph_rag.py`).
- 4. If the KB is insufficient, the persona plan may instruct the orchestrator to generate search queries, scrape sources (via `backend/scrapers`), cluster ideas (`backend/clustering.py`), build/merge cluster graphs (`backend/graph_builder.py`) and add new embeddings to the KB.
- 5. A final RAG + persona delivery step produces the natural-language answer returned by `/ask`.
+
+2.  `multi_agent.py` routes the query to a persona (marketing or finance) using a small supervisor agent.
+3.  The system tries a RAG lookup against the in-memory KB (`backend/graph_rag.py`).
+4.  If the KB is insufficient, the persona plan may instruct the orchestrator to generate search queries, scrape sources (via `backend/scrapers`), cluster ideas (`backend/clustering.py`), build/merge cluster graphs (`backend/graph_builder.py`) and add new embeddings to the KB.
+5.  A final RAG + persona delivery step produces the natural-language answer returned by `/ask`.
+6.  The frontend parses the persona from the response and displays it with a unique color.
 
 - Persistence: At present the KB is in-memory only (a Python dict keyed by embedding tuples). For production use you should persist the KB and reuse FAISS indexes instead of rebuilding them on each call.
 
 - LLM calls: The code uses Strands/OpenAI agents (`strands` library). Ensure `OPENAI_API_KEY` is set and that you have the required Strands extras installed (see `backend/requirements.txt`).
-
-## Key developer tasks / next steps you might want to take
-
-- Persist the knowledge base and avoid rebuilding FAISS indexes on every request (`backend/graph_rag.py` contains a note about this).
-- Add authentication/ratelimiting around the FastAPI endpoint.
-- Add tests for the clustering → graph pipeline (unit test cluster outputs + small graph sanity checks).
-
-## Dependencies
-
-- Backend: see `backend/requirements.txt` (includes FastAPI, uvicorn, sentence-transformers, hdbscan, faiss/pyfaiss, strands-agents, cdlib, etc.).
-- Frontend: see `frontend/package.json` (Vue 3, vis-network).
-
-## Contributing
-
-If you want to add features or fixes:
-1. Open an issue with the feature description or bug reproduction steps.
-2. Create a branch, implement changes and add tests where appropriate.
-3. Submit a PR and reference the issue.
-
-## License
-This project does not include a license file; add one if you intend to make it public.
-
----
-
-If you'd like, I can:
-- add a small example script that hits `/ask` with a sample query,
-- add a minimal unit test for `graph_rag.py`, or
-- prepare a docker-compose file to run the backend + frontend together.
-Tell me which you'd prefer and I'll implement it.
 
