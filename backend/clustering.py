@@ -97,7 +97,5 @@ if __name__ == '__main__':
     ]
 
     clustered_data = cluster_and_summarize(sample_ideas)
-    graph_data = build_cluster_graph(clustered_data)
-    for embedding, description in graph_data.items():
-        print(f"Description: {description}\nEmbedding (first 5 elements): {embedding[:5]}\n---")
-
+    embedding_to_explanation, group_to_explanation, similarity_matrix = build_cluster_graph(clustered_data)
+    breakpoint()

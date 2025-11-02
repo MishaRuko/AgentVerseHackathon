@@ -25,7 +25,10 @@ def build_cluster_graph(clustered_data):
             Output from cluster_and_summarize. Output format documented in clustering.py.
 
     Returns:
-        dict: A dictionary mapping combined embedding to long description for each cluster group.
+        dict: A dictionary mapping combined embedding to long description for each cluster group. Includes individual clusters as well.
+        dict: A dictionary mapping cluster group (tuple of node indices) to long description. Does not include individual clusters.
+        np.ndarray: Cosine similarity matrix of the cluster embeddings. "Unconnected" clusters will have 0 similarity.
+
     """
     model = SentenceTransformer('all-MiniLM-L6-v2')
 
@@ -36,7 +39,7 @@ def build_cluster_graph(clustered_data):
     similarity_matrix = cosine_similarity(cluster_embeddings)
 
     # Force cosine similarities below a certain threshold to 0 for more meaningful connections
-    meaningful_similarity_threshold = 0.4  # This value can be tuned
+    meaningful_similarity_threshold = 0.35  # This value can be tuned
     similarity_matrix[similarity_matrix < meaningful_similarity_threshold] = 0
 
     # 2. Create a NetworkX graph from the similarity matrix
@@ -62,7 +65,8 @@ def build_cluster_graph(clustered_data):
             node_community.add(edge[1])
         cluster_groups.append(list(node_community))
 
-    final_results = {}
+    embedding_to_explanation = {}
+    group_to_explanation = {}
     for group_nodes in cluster_groups:  # Iterate over the communities
         if len(group_nodes) <= 1:
             continue
@@ -81,10 +85,12 @@ Explain concisely and succinctly why these ideas are related and provide a brief
         combined_description = f"Overarching theme: {group_explanation}\n\nRelated ideas:\n{'- ' + '\n- '.join(group_summaries)}"
         combined_embedding = model.encode([combined_description])[0]
 
-        final_results[tuple(combined_embedding.tolist())] = combined_description
+        group_to_explanation[tuple(group_nodes)] = combined_description
+
+        embedding_to_explanation[tuple(combined_embedding.tolist())] = combined_description
 
     # Add individual clusters to the final result
     for i, item in enumerate(clustered_data):
-        final_results[tuple(item["embedding"].tolist())] = item["summary"]
+        embedding_to_explanation[tuple(item["embedding"].tolist())] = item["summary"]
 
-    return final_results
+    return embedding_to_explanation, group_to_explanation, similarity_matrix
