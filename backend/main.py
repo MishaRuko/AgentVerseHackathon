@@ -323,12 +323,28 @@ async def _send_progress(websocket: WebSocket | None, message: str, stage: str =
         return
     
 
+# Helper function to convert numpy arrays to lists recursively
+def convert_numpy_to_list(obj):
+    """Recursively convert numpy arrays to Python lists for JSON serialization."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_to_list(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_to_list(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_to_list(item) for item in obj)
+    else:
+        return obj
+
 # Helper for sending graph data to the frontend
 async def _send_graph_data(websocket: WebSocket | None, graph_data: dict):
     if websocket is None:
         return
     try:
-        await websocket.send_text(json.dumps(graph_data))
+        # Convert any numpy arrays to lists for JSON serialization
+        graph_data_serializable = convert_numpy_to_list(graph_data)
+        await websocket.send_text(json.dumps(graph_data_serializable))
         logger.info(f"📤 Sent graph data with {len(graph_data.get('nodes', []))} nodes")
     except Exception as e:
         logger.error(f"Failed to send graph data: {e}")
@@ -431,21 +447,12 @@ async def handle_user_query(user_query: str, websocket: WebSocket | None = None)
             response_graph = {
                 "nodes": frontend_info[0],
                 "annotations": annotations,
-                "similarity_matrix": frontend_info[2].tolist()
+                "similarity_matrix": frontend_info[2]
             }
             
             # Send graph data to frontend
-
-
-            for key, value in response_graph.items():
-                logging.info(f"Key: {key}, Type: {type(value)}")
-                if isinstance(value, (list, dict)):
-                    # If the value is a list or dict, you might need a deeper check
-                    if key == "similarity_matrix" and isinstance(value, np.ndarray):
-                        logger.warning(f"🚨 Found NumPy ndarray in similarity_matrix!")
-
-            logger.info(f"SENDING TO GRAPH DATA TO FRONTEND", response_graph["similarity_matrix"])
-            await websocket.send(json.dumps(response_graph))
+            logger.info(f"📤 Sending graph data to frontend with {len(response_graph['nodes'])} nodes")
+            await _send_graph_data(websocket, response_graph)
             
             # Check if we need more data
             needs_more_data = _kb_update_info.get("needs_more_data", False)
