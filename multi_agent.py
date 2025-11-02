@@ -11,12 +11,11 @@ import requests
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 
-# -----------------------------------------
-# ENV / PATH / IMPORTS
-# -----------------------------------------
+# -------------------------------------------------
+# setup imports / globals same as before
+# -------------------------------------------------
 
 load_dotenv()
-
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
 from graph_rag import rag_query
@@ -31,23 +30,11 @@ from personas import (
     make_finance_persona_tool,
 )
 
-# -----------------------------------------
-# GLOBAL KB
-# -----------------------------------------
-
 knowledge_base = {}
-
-# -----------------------------------------
-# MODEL
-# -----------------------------------------
 
 openai_model = OpenAIModel(
     model_id="gpt-4o-mini",
 )
-
-# -----------------------------------------
-# LOAD PROMPTS
-# -----------------------------------------
 
 with open("agent_prompts.yaml", "r") as f:
     _p = yaml.safe_load(f)
@@ -55,19 +42,19 @@ with open("agent_prompts.yaml", "r") as f:
     SCRAPER_PROMPT = _p["scraper"]
     GRAPH_RAG_PROMPT = _p["graph_rag"]
 
-with open("system_prompt.yaml", "r") as f:
+# This will give tone etc. if you want to later condition routing
+with open("marketing_strategist.yaml", "r") as f:
     _o = yaml.safe_load(f)
-    ORCHESTRATOR_PROMPT = _o["orchestrator"]
+    BASE_ORCHESTRATOR_PROMPT = _o["orchestrator"]
 
-# -----------------------------------------
-# HELPERS
-# -----------------------------------------
+
+# -------------------------------------------------
+# util functions same as before (infer_source_type, google_search)
+# -------------------------------------------------
 
 def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
     if not url:
         return "general"
-
-    from urllib.parse import urlparse
     parsed = urlparse(url)
     netloc = (parsed.netloc or "").lower()
     path = (parsed.path or "").lower()
@@ -119,13 +106,13 @@ def google_search(query: str, num_results: int = 3) -> list:
             {
                 "title": f"Result 2 for '{query}'",
                 "url": f"https://example.com/result2?q={quote_plus(query)}",
-                "snippet": f"Additional information about {query}...",
+                "snippet": f"More info about {query}...",
                 "type": "general"
             },
             {
                 "title": f"Result 3 for '{query}'",
                 "url": f"https://example.com/result3?q={quote_plus(query)}",
-                "snippet": f"More details about {query}...",
+                "snippet": f"Extra details about {query}...",
                 "type": "general"
             }
         ][:num_results]
@@ -138,10 +125,9 @@ def google_search(query: str, num_results: int = 3) -> list:
             "q": query,
             "num": num_results
         }
-
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
 
         out = []
         for item in data.get("items", [])[:num_results]:
@@ -159,14 +145,16 @@ def google_search(query: str, num_results: int = 3) -> list:
     except Exception:
         return google_search(query, num_results)
 
-# -----------------------------------------
-# CREATE LOW-LEVEL AGENTS
-# -----------------------------------------
 
+# -------------------------------------------------
+# Create all agents
+# -------------------------------------------------
+
+# 1. low-level workers
 _source_selector_agent_instance = Agent(
     model=openai_model,
     name="Source Selector",
-    description="Generates targeted search queries for multiple source types.",
+    description="Generate 3 smart queries to find relevant sources.",
     system_prompt=SOURCE_SELECTOR_PROMPT,
     callback_handler=None,
 )
@@ -174,7 +162,7 @@ _source_selector_agent_instance = Agent(
 _scraper_agent_instance = Agent(
     model=openai_model,
     name="Web Scraper",
-    description="Extracts atomic ideas from raw sources.",
+    description="Extract atomic ideas from provided sources.",
     system_prompt=SCRAPER_PROMPT,
     callback_handler=None,
 )
@@ -182,36 +170,56 @@ _scraper_agent_instance = Agent(
 _graph_rag_agent_instance = Agent(
     model=openai_model,
     name="Graph RAG Synthesizer",
-    description="Synthesizes an answer from retrieved graph/cluster contexts.",
+    description="Synthesize an answer from graph KB contexts.",
     system_prompt=GRAPH_RAG_PROMPT,
     callback_handler=None,
 )
 
-# personas
+# 2. personas
 _marketing_persona_agent_instance = build_marketing_persona_agent(openai_model)
-_investment_banking_persona_agent_instance = build_finance_persona_agent(openai_model)
+_finance_persona_agent_instance = build_finance_persona_agent(openai_model)
 
-marketing_persona_agent = make_marketing_persona_tool(_marketing_persona_agent_instance)
-ib_persona_agent = make_finance_persona_tool(_investment_banking_persona_agent_instance)
+marketing_persona_tool = make_marketing_persona_tool(_marketing_persona_agent_instance)
+finance_persona_tool   = make_finance_persona_tool(_finance_persona_agent_instance)
 
-# -----------------------------------------
-# TOOL WRAPPERS
-# -----------------------------------------
+# 3. tiny router LLM for persona selection
+_supervisor_router_agent_instance = Agent(
+    model=openai_model,
+    name="Supervisor Router",
+    description="Classifies which persona should answer and what task it should perform.",
+    system_prompt=(
+        "You are a routing assistant.\n"
+        "Input: a user query.\n"
+        "Output: STRICT JSON with keys:\n"
+        "{\n"
+        '  "persona_name": "marketing" | "finance",\n'
+        '  "persona_task": string   // e.g. "draft_marketing_strategy", "risk_scan", "investor_opportunity_scan"\n'
+        "}\n\n"
+        "Rules:\n"
+        "- Use persona_name='marketing' for marketing/branding/growth/messaging/comms questions.\n"
+        "- Use persona_name='finance' for investor/market-sentiment/risk/opportunity/competitive questions.\n"
+        "- persona_task should be one of:\n"
+        "   marketing: 'summarize_findings_for_stakeholder', 'draft_marketing_strategy', 'risk_scan'\n"
+        "   finance:   'summarize_findings_for_stakeholder', 'investor_opportunity_scan', 'risk_scan'\n"
+        "Return ONLY JSON. No commentary."
+    ),
+    callback_handler=None,
+)
 
-@tool(description="Generate 3 diverse Google queries, then gather top sources for each.")
-def source_selector_agent(user_query: str) -> str:
-    """
-    Returns:
-      { "sources": [ { "url": ..., "type": ...}, ... ] }
-    """
+
+# -------------------------------------------------
+# Wrappers around tool-like behaviors
+# -------------------------------------------------
+
+def run_source_selector(user_query: str) -> dict:
+    raw = _source_selector_agent_instance(user_query)
     try:
-        raw = _source_selector_agent_instance(user_query)
         queries = json.loads(str(raw).strip())
     except Exception:
         queries = [
             user_query,
             f"{user_query} latest discussion",
-            f"{user_query} controversy reddit"
+            f"{user_query} controversy reddit",
         ]
 
     all_sources = []
@@ -221,94 +229,61 @@ def source_selector_agent(user_query: str) -> str:
                 "url": r["url"],
                 "type": r["type"],
             })
-    return json.dumps({"sources": all_sources})
+
+    return {"sources": all_sources}
 
 
-@tool(description="Scrape provided sources and extract atomic 'ideas' statements for clustering.")
-async def scraper_agent(sources_json: str) -> str:
-    """
-    Input:  {"sources":[{"url":"...","type":"reddit_post"}, ...]}
-    Output: {"ideas": ["idea1", "idea2", ...]}
-    """
-    try:
-        payload = json.loads(sources_json)
-        sources = payload.get("sources", [])
-    except Exception:
-        sources = []
-
+async def run_scraper(sources: dict) -> dict:
+    # sources is {"sources":[{"url":...,"type":...}, ...]}
     loop = asyncio.get_running_loop()
     ideas_list = await loop.run_in_executor(
         None,
         WebScraper.scrape_and_generate_ideas,
-        sources
+        sources.get("sources", [])
     )
+    return {"ideas": ideas_list}
 
-    return json.dumps({"ideas": ideas_list})
 
-
-@tool(description="Cluster ideas, build/expand the global knowledge graph, and update the shared knowledge base.")
-def graph_builder_agent(ideas_json: str) -> str:
-    """
-    Input: {"ideas":["...", "...", ...]}
-
-    Updates global knowledge_base using cluster_and_summarize + build_cluster_graph.
-    """
+def update_graph_and_kb(ideas: dict) -> dict:
     global knowledge_base
 
-    try:
-        payload = json.loads(ideas_json)
-        ideas = payload.get("ideas", [])
-    except Exception:
-        ideas = []
-
-    if not ideas:
-        return json.dumps({
+    idea_list = ideas.get("ideas", [])
+    if not idea_list:
+        return {
             "kb_size": len(knowledge_base),
             "clusters_added": 0,
             "status": "no_ideas"
-        })
+        }
 
-    clustered_data = cluster_and_summarize(ideas)
-    embedding_to_explanation, group_to_explanation, _sim = build_cluster_graph(
-        clustered_data
-    )
+    clustered = cluster_and_summarize(idea_list)
+    embedding_to_explanation, group_to_explanation, _sim = build_cluster_graph(clustered)
 
     added = 0
-    for emb_tuple, text_block in embedding_to_explanation.items():
+    for emb_tuple, txt in embedding_to_explanation.items():
         if emb_tuple not in knowledge_base:
             added += 1
-        knowledge_base[emb_tuple] = text_block
+        knowledge_base[emb_tuple] = txt
 
-    return json.dumps({
+    return {
         "kb_size": len(knowledge_base),
         "clusters_added": added,
         "status": "ok"
-    })
-
-
-@tool(description="Query the global knowledge base using Graph RAG and synthesize an answer.")
-def graph_rag_agent(user_query: str) -> str:
-    """
-    Output:
-    {
-      "answer": "...",
-      "sources_used": n,
-      "confidence": "high|medium|low",
-      "contexts": [...]
     }
-    """
+
+
+def run_graph_rag(user_query: str) -> dict:
     global knowledge_base
 
     if not knowledge_base:
-        return json.dumps({
+        return {
             "answer": "No knowledge available yet.",
             "sources_used": 0,
             "confidence": "low",
             "contexts": []
-        })
+        }
 
     contexts = rag_query(knowledge_base, user_query, top_k=3)
-    context_texts = [c["text"] for c in contexts]
+    ctx_texts = [c["text"] for c in contexts]
 
     synthesis_prompt = f"""
 You are the Graph RAG synthesis specialist.
@@ -316,15 +291,15 @@ You are the Graph RAG synthesis specialist.
 User Query: {user_query}
 
 Retrieved Contexts:
-{json.dumps(context_texts, indent=2)}
+{json.dumps(ctx_texts, indent=2)}
 
 Return ONLY a JSON object:
 {{
-    "answer": "your comprehensive answer here",
-    "sources_used": <number>,
-    "confidence": "high/medium/low"
+  "answer": "your comprehensive answer here",
+  "sources_used": <number>,
+  "confidence": "high/medium/low"
 }}
-""".strip()
+    """.strip()
 
     llm_raw = _graph_rag_agent_instance(synthesis_prompt)
     llm_text = str(llm_raw).strip()
@@ -339,48 +314,143 @@ Return ONLY a JSON object:
         }
 
     parsed["contexts"] = contexts
-    return json.dumps(parsed)
+    return parsed
 
-# NOTE:
-# marketing_persona_agent and ib_persona_agent are both @tool from the factories.
-# Their signature now is:
-#   persona_tool(
-#       mode: str,               # "plan" or "deliver"
-#       persona_task: str,       # ex. "draft_marketing_strategy"
-#       kb_size: int,            # len(knowledge_base)
-#       graph_answer_json: str   # output from graph_rag_agent(...)
-#   ) -> str
 
-# -----------------------------------------
-# SUPERVISOR PROMPT WITH LOOPS
-# -----------------------------------------
+def route_persona_and_task(user_query: str) -> dict:
+    """Ask the tiny router agent which persona + task to use."""
+    result = _supervisor_router_agent_instance(user_query)
+    try:
+        routing = json.loads(str(result).strip())
+    except Exception:
+        # fallback guess if it somehow fails
+        routing = {
+            "persona_name": "marketing",
+            "persona_task": "summarize_findings_for_stakeholder"
+        }
+    return routing
 
-SUPERVISOR_PROMPT =  ORCHESTRATOR_PROMPT
 
-# -----------------------------------------
-# BUILD ORCHESTRATOR
-# -----------------------------------------
-
-def _build_orchestrator() -> Agent:
+def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> dict:
     """
-    The Supervisor agent that:
-    - picks persona + persona_task
-    - asks persona in 'plan' mode if KB is enough
-    - maybe enriches KB via source_selector -> scraper -> graph_builder
-    - asks persona in 'deliver' mode for final answer
-    - returns ONLY persona output
+    Ask the chosen persona in PLAN mode:
+      - is KB enough?
+      - if not, what should we search?
+    Returns parsed dict like:
+      { "need_more_info": bool, "persona_task": "...", "search_hints": "..."? }
     """
-    orchestrator = Agent(
-        model=openai_model,
-        system_prompt=SUPERVISOR_PROMPT,
-        tools=[
-            source_selector_agent,
-            scraper_agent,
-            graph_builder_agent,
-            graph_rag_agent,
-            marketing_persona_agent,
-            ib_persona_agent,
-        ],
-        callback_handler=None,
+    analysis_json = json.dumps(analysis)
+
+    if persona_name == "marketing":
+        raw = marketing_persona_tool(
+            mode="plan",
+            persona_task=persona_task,
+            kb_size=kb_size,
+            graph_answer_json=analysis_json
+        )
+    else:
+        raw = finance_persona_tool(
+            mode="plan",
+            persona_task=persona_task,
+            kb_size=kb_size,
+            graph_answer_json=analysis_json
+        )
+
+    try:
+        plan = json.loads(raw)
+    except Exception:
+        # if persona didn't give valid JSON, default to "we need more info"
+        plan = {
+            "need_more_info": True,
+            "persona_task": persona_task,
+            "search_hints": "broadly scrape recent discussion and sentiment on this topic"
+        }
+    return plan
+
+
+def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> str:
+    """
+    Ask the chosen persona in DELIVER mode to generate final stakeholder output.
+    Returns plain text that we show the user.
+    """
+    analysis_json = json.dumps(analysis)
+
+    if persona_name == "marketing":
+        final_resp = marketing_persona_tool(
+            mode="deliver",
+            persona_task=persona_task,
+            kb_size=kb_size,
+            graph_answer_json=analysis_json
+        )
+    else:
+        final_resp = finance_persona_tool(
+            mode="deliver",
+            persona_task=persona_task,
+            kb_size=kb_size,
+            graph_answer_json=analysis_json
+        )
+
+    return final_resp
+
+
+# -------------------------------------------------
+# THIS is the orchestrated loop.
+# Call this from your API instead of calling an LLM supervisor.
+# -------------------------------------------------
+
+async def handle_user_query(user_query: str) -> str:
+    """
+    This is the real brain.
+
+    1. Route to persona + task.
+    2. Pull current KB using graph_rag.
+    3. Ask persona in 'plan' mode if KB is enough.
+    4. If not enough:
+        a. source_selector -> scraper -> graph_builder to enrich KB
+        b. run graph_rag again
+    5. Ask persona in 'deliver' mode for final stakeholder-facing output.
+    6. Return that final output text.
+    """
+
+    # Step 1: persona routing
+    routing = route_persona_and_task(user_query)
+    persona_name = routing["persona_name"]           # "marketing" or "finance"
+    persona_task = routing["persona_task"]           # ex. "draft_marketing_strategy"
+
+    # Step 2: current analysis from KB
+    initial_analysis = run_graph_rag(user_query)
+    kb_size_now = len(knowledge_base)
+
+    # Step 3: ask persona to plan
+    plan = persona_plan(persona_name, persona_task, kb_size_now, initial_analysis)
+
+    # Step 4: maybe enrich
+    final_analysis = initial_analysis
+    kb_size_after = kb_size_now
+
+    if plan.get("need_more_info", False):
+        search_hints = plan.get("search_hints", user_query)
+
+        # 4a. pick sources
+        sources = run_source_selector(search_hints)
+
+        # 4b. scrape -> ideas
+        ideas = await run_scraper(sources)
+
+        # 4c. update KB
+        _kb_update_info = update_graph_and_kb(ideas)
+        kb_size_after = len(knowledge_base)
+
+        # 4d. re-run graph rag with enriched KB
+        final_analysis = run_graph_rag(user_query)
+
+    # Step 5: persona deliver
+    final_output_text = persona_deliver(
+        persona_name=persona_name,
+        persona_task=persona_task,
+        kb_size=kb_size_after,
+        analysis=final_analysis
     )
-    return orchestrator
+
+    # Step 6: return final stakeholder-facing text
+    return final_output_text
