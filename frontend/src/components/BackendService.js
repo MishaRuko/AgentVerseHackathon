@@ -11,6 +11,8 @@ export function useBackendService() {
   // State from backend
   const messages = ref([]);
   const graphData = ref(null); // { nodes, annotations, similarity_matrix }
+  const isLoading = ref(false);
+  const progressMessage = ref('');
 
   // --- WebSocket Management ---
   function connectWebSocket() {
@@ -40,6 +42,17 @@ export function useBackendService() {
       try {
         const data = JSON.parse(event.data);
         
+        // Check if this is a progress message
+        if (data.type === 'progress' && data.message) {
+          // Ensure message is a string, not an object
+          const messageText = typeof data.message === 'string' ? data.message : String(data.message);
+          if (messageText && messageText !== '[object Object]') {
+            progressMessage.value = messageText;
+            isLoading.value = true;
+          }
+          return;
+        }
+        
         // Check if this is graph data (has nodes, annotations, similarity_matrix)
         if (data.nodes && data.annotations && data.similarity_matrix) {
           console.log('Received graph data:', { 
@@ -47,18 +60,30 @@ export function useBackendService() {
             annotationCount: Object.keys(data.annotations).length 
           });
           graphData.value = data;
+          // Keep loading state true - more progress may come
           // Also add a message confirming graph was received
           addMessage('ai', `I've generated a graph showing ${data.nodes.length} related trend clusters. You can now ask questions about the connections and relationships.`);
         } else if (typeof data === 'string') {
           // Regular chat message (if JSON was a string)
+          // If it's a final response, stop loading
+          isLoading.value = false;
+          progressMessage.value = '';
           addMessage('ai', data);
         } else {
           // Handle other message formats
+          // If it looks like a final response, stop loading
+          if (data.answer || data.result) {
+            isLoading.value = false;
+            progressMessage.value = '';
+          }
           addMessage('ai', JSON.stringify(data));
         }
       } catch (e) {
         // If it's not JSON, treat it as plain text
         if (typeof event.data === 'string') {
+          // If it's a plain text response (final answer), stop loading
+          isLoading.value = false;
+          progressMessage.value = '';
           addMessage('ai', event.data);
         } else {
           console.error('Error parsing message:', e);
@@ -96,6 +121,9 @@ export function useBackendService() {
         if (ws.value && ws.value.readyState === WebSocket.OPEN) {
           ws.value.send(message);
           addMessage('human', message);
+          // Start loading when message is sent
+          isLoading.value = true;
+          progressMessage.value = 'Processing your request...';
         } else {
           console.error('Failed to connect WebSocket');
         }
@@ -104,8 +132,10 @@ export function useBackendService() {
     }
     ws.value.send(message);
     addMessage('human', message);
+    // Start loading when message is sent
+    isLoading.value = true;
+    progressMessage.value = 'Processing your request...';
     console.log('Message Sent');
-
   }
 
   // --- Initialization ---
@@ -118,6 +148,8 @@ export function useBackendService() {
     wsConnected: computed(() => wsConnected.value),
     messages,
     graphData,
+    isLoading: computed(() => isLoading.value),
+    progressMessage: computed(() => progressMessage.value),
     sendMessage,
     init,
     WS_URL,

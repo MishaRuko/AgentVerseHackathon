@@ -1,15 +1,24 @@
-import os
-import sys
-import json
-import re
 import asyncio
-import requests
-import yaml
+import json
 import logging
+import os
+import re
+import sys
 from urllib.parse import quote_plus, urlparse
+
+import requests
+import scrapers.scraper_agent as WebScraper
+import yaml
+from clustering import cluster_and_summarize
 from dotenv import load_dotenv
+from graph_builder import build_cluster_graph
+from graph_rag import rag_query
 from strands import Agent
 from strands.models.openai import OpenAIModel
+
+from personas import (build_finance_persona_agent,
+                      build_marketing_persona_agent, make_finance_persona_tool,
+                      make_marketing_persona_tool)
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +29,6 @@ if BACKEND_DIR not in sys.path:
 
 load_dotenv()
 
-from graph_rag import rag_query
-import scrapers.scraper_agent as WebScraper
-from clustering import cluster_and_summarize
-from graph_builder import build_cluster_graph
-from personas import (
-    build_marketing_persona_agent,
-    make_marketing_persona_tool,
-    build_finance_persona_agent,
-    make_finance_persona_tool,
-)
 
 with open(os.path.join(REPO_ROOT, "system_prompt.yaml"), "r") as f:
     _sys_yaml = yaml.safe_load(f)
@@ -41,13 +40,10 @@ with open(os.path.join(REPO_ROOT, "agent_prompts.yaml"), "r") as f:
     SCRAPER_PROMPT = _p["scraper"]
     GRAPH_RAG_PROMPT = _p["graph_rag"]
 
-with open(os.path.join(REPO_ROOT, "system_prompt.yaml"), "r") as f:
-    _o = yaml.safe_load(f)
-    BASE_ORCHESTRATOR_PROMPT = _o["supervisor"]
-
 openai_model = OpenAIModel(
     model_id="gpt-4o-mini",
 )
+
 
 def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
     if not url:
@@ -163,6 +159,7 @@ def google_search(query: str, num_results: int = 3) -> list:
             }
         ][:num_results]
 
+
 _source_selector_agent_instance = Agent(
     model=openai_model,
     name="Source Selector",
@@ -191,32 +188,18 @@ _marketing_persona_agent_instance = build_marketing_persona_agent(openai_model)
 _finance_persona_agent_instance = build_finance_persona_agent(openai_model)
 
 marketing_persona_tool = make_marketing_persona_tool(_marketing_persona_agent_instance)
-finance_persona_tool   = make_finance_persona_tool(_finance_persona_agent_instance)
+finance_persona_tool = make_finance_persona_tool(_finance_persona_agent_instance)
 
 _supervisor_router_agent_instance = Agent(
     model=openai_model,
     name="Supervisor Router",
     description="Classifies which persona should answer and what task it should perform.",
-    system_prompt=(
-        "You are a routing assistant.\n"
-        "Input: a user query.\n"
-        "Output: STRICT JSON with keys:\n"
-        "{\n"
-        '  \"persona_name\": \"marketing\" | \"finance\",\n'
-        '  \"persona_task\": string   // e.g. \"draft_marketing_strategy\", \"risk_scan\", \"investor_opportunity_scan\"\n'
-        "}\n\n"
-        "Rules:\n"
-        "- Use persona_name='marketing' for marketing/branding/growth/messaging/comms questions.\n"
-        "- Use persona_name='finance' for investor/market-sentiment/risk/opportunity/competitive questions.\n"
-        "- persona_task should be one of:\n"
-        "   marketing: 'summarize_findings_for_stakeholder', 'draft_marketing_strategy', 'risk_scan'\n"
-        "   finance:   'summarize_findings_for_stakeholder', 'investor_opportunity_scan', 'risk_scan'\n"
-        "Return ONLY JSON. No commentary."
-    ),
+    system_prompt=SUPERVISOR_PROMPT,
     callback_handler=None,
 )
 
 knowledge_base = {}
+
 
 def run_source_selector(user_query: str) -> dict:
     logger.info("   🔍 Source selector generating search queries...")
@@ -276,13 +259,13 @@ def update_graph_and_kb(ideas: dict) -> dict:
     logger.info(f"   🔄 Clustering {len(idea_list)} ideas...")
     clustered = cluster_and_summarize(idea_list)
     logger.info(f"   ✅ Created {len(clustered)} clusters")
-    
+
     logger.info(f"   🔗 Building cluster graph...")
     embedding_to_explanation, group_to_explanation, _sim = build_cluster_graph(clustered)
-    
+
     # Check if clusters are too dissimilar (no groups formed)
     needs_more_data = len(group_to_explanation) == 0 and len(clustered) > 1
-    
+
     if needs_more_data:
         logger.warning(f"   ⚠️  Clusters too dissimilar - no meaningful connections found")
     else:
@@ -337,6 +320,8 @@ Return ONLY a JSON object:
 }}
     """.strip()
 
+    logger.info(f"\n--SYNTHESIS PROMPT--\n{synthesis_prompt}\n--------------------")
+
     logger.info(f"   🤖 Synthesizing answer with LLM...")
     llm_raw = _graph_rag_agent_instance(synthesis_prompt)
     llm_text = str(llm_raw).strip()
@@ -371,7 +356,7 @@ def route_persona_and_task(user_query: str) -> dict:
     return routing
 
 
-def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> dict:
+def persona_plan(persona_name: str, persona_task: str, user_query: str, kb_size: int, analysis: dict) -> dict:
     logger.info(f"   🤖 {persona_name.capitalize()} persona creating plan...")
     analysis_json = json.dumps(analysis)
 
@@ -379,6 +364,7 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
         raw = marketing_persona_tool(
             mode="plan",
             persona_task=persona_task,
+            user_query=user_query,
             kb_size=kb_size,
             graph_answer_json=analysis_json
         )
@@ -386,6 +372,7 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
         raw = finance_persona_tool(
             mode="plan",
             persona_task=persona_task,
+            user_query=user_query,
             kb_size=kb_size,
             graph_answer_json=analysis_json
         )
@@ -398,12 +385,12 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
         plan = {
             "need_more_info": True,
             "persona_task": persona_task,
-            "search_hints": "broadly scrape recent discussion and sentiment on this topic"
+            "search_hints": user_query or "broadly scrape recent discussion and sentiment on this topic"
         }
     return plan
 
 
-def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> str:
+def persona_deliver(persona_name: str, persona_task: str, user_query: str, kb_size: int, analysis: dict) -> str:
     logger.info(f"   🤖 {persona_name.capitalize()} persona generating final response...")
     analysis_json = json.dumps(analysis)
 
@@ -411,6 +398,7 @@ def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis
         final_resp = marketing_persona_tool(
             mode="deliver",
             persona_task=persona_task,
+            user_query=user_query,
             kb_size=kb_size,
             graph_answer_json=analysis_json
         )
@@ -418,6 +406,7 @@ def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis
         final_resp = finance_persona_tool(
             mode="deliver",
             persona_task=persona_task,
+            user_query=user_query,
             kb_size=kb_size,
             graph_answer_json=analysis_json
         )

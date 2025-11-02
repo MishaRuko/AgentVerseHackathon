@@ -75,7 +75,7 @@
 
 #     # Step 3: Plan next actions
 #     logger.info(f"\n🎯 STEP 3: Planning next actions...")
-#     plan = persona_plan(persona_name, persona_task, kb_size_now, initial_analysis)
+#     plan = persona_plan(persona_name, persona_task, user_query, kb_size_now, initial_analysis)
 #     need_more_info = plan.get("need_more_info", False)
 #     logger.info(f"✅ Plan generated. Need more info: {need_more_info}")
     
@@ -375,7 +375,7 @@ async def handle_user_query(user_query: str, websocket: WebSocket | None = None)
     # Step 3: Plan next actions
     await _send_progress(websocket, "Planning next actions...", "progress")
     logger.info(f"\n🎯 STEP 3: Planning next actions...")
-    plan = persona_plan(persona_name, persona_task, kb_size_now, initial_analysis)
+    plan = persona_plan(persona_name, persona_task, user_query, kb_size_now, initial_analysis)
     need_more_info = plan.get("need_more_info", False)
     logger.info(f"✅ Plan generated. Need more info: {need_more_info}")
     
@@ -483,6 +483,7 @@ async def handle_user_query(user_query: str, websocket: WebSocket | None = None)
     final_output_text = persona_deliver(
         persona_name=persona_name,
         persona_task=persona_task,
+        user_query=user_query,
         kb_size=kb_size_after,
         analysis=final_analysis
     )

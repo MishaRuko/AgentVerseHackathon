@@ -87,7 +87,7 @@ watch(
 }
 
 .chat-root {
-  background: linear-gradient(135deg, #0ABAB5 0%, #7FE3DE 100%);
+  background: linear-gradient(135deg, #0ABAB5 0%, #afe6e4 100%);
   border-radius: 35px;
   display: flex;
   flex-direction: column;

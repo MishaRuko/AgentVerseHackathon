@@ -157,10 +157,11 @@ def make_finance_persona_tool(persona_agent: Agent):
     mcp_client = MCPClient()
 
     @tool(description="Finance persona. mode='plan' or 'deliver'. Helps plan enrichment and generate financial output.")
-    def finance_persona_agent(mode: str, persona_task: str, kb_size: int, graph_answer_json: str) -> str:
+    def finance_persona_agent(mode: str, persona_task: str, user_query: str, kb_size: int, graph_answer_json: str) -> str:
         """
         mode: "plan" or "deliver"
         persona_task: ex. 'investment_analysis', 'risk_assessment'
+        user_query: the original user question or request
         kb_size: current size of the knowledge base (int)
         graph_answer_json: stringified JSON from graph_rag containing fields:
             - answer
@@ -177,11 +178,12 @@ def make_finance_persona_tool(persona_agent: Agent):
         except Exception:
             graph_json_obj = None
 
-        # Build a lightweight MCP query. Prefer using the graph 'answer' text if present,
+        # Build a lightweight MCP query. Prefer using the user_query, then graph 'answer' text if present,
         # otherwise fall back to the persona task string.
-        query_text = None
-        if isinstance(graph_json_obj, dict):
-            query_text = graph_json_obj.get("answer") or graph_json_obj.get("query")
+        query_text = user_query
+        if not query_text:
+            if isinstance(graph_json_obj, dict):
+                query_text = graph_json_obj.get("answer") or graph_json_obj.get("query")
         if not query_text:
             query_text = persona_task or "financial signals"
 
@@ -196,6 +198,7 @@ def make_finance_persona_tool(persona_agent: Agent):
 
         # Compose the persona prompt, injecting MCP summary and the graph snapshot.
         prompt_parts = [f"You are operating in MODE = {mode}.", ""]
+        prompt_parts.append(f"Original user query: {user_query}")
         prompt_parts.append(f"persona_task: {persona_task}")
         prompt_parts.append(f"kb_size: {kb_size}")
         prompt_parts.append("")
@@ -206,6 +209,8 @@ def make_finance_persona_tool(persona_agent: Agent):
         prompt_parts.append(mcp_summary)
         prompt_parts.append("")
         prompt_parts.append("Follow the MODE rules from your system prompt.")
+        prompt_parts.append("When generating search_hints in MODE \"plan\", ensure they are specific to the user's query: \"" + user_query + "\".")
+        prompt_parts.append("When responding in MODE \"deliver\", tailor your response to address the user's query: \"" + user_query + "\".")
         prompt_parts.append("If MODE is \"plan\", respond with a pure JSON object as a string.")
         prompt_parts.append("If MODE is \"deliver\", respond with final stakeholder-facing narrative (no JSON).")
 
@@ -219,7 +224,8 @@ def make_finance_persona_tool(persona_agent: Agent):
             logger.exception("Finance persona agent call failed: %s", e)
             # Fallback: return a minimal JSON for plan mode or a plain failure note for deliver
             if mode == "plan":
-                fallback = json.dumps({"need_more_info": True, "persona_task": persona_task, "search_hints": "collect more financial datasets and market reports"})
+                search_hints = user_query or "collect more financial datasets and market reports"
+                fallback = json.dumps({"need_more_info": True, "persona_task": persona_task, "search_hints": search_hints})
                 return fallback
             return "Finance persona failed to produce a response."
 

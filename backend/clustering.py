@@ -14,11 +14,12 @@ def cluster_and_summarize(ideas):
 
     Returns:
         list[dict]:
-            A list of dictionaries, where each dictionary contains the summary, its embedding, and a list of the original ideas and their embeddings.
+            A list of dictionaries, where each dictionary contains a short title, the summary, its embedding, and a list of the original ideas and their embeddings.
             List format:
             [
                 {
-                    "summary": str,
+                    "title": str,  # Short title (max 5 words)
+                    "summary": str,  # Detailed summary
                     "embedding": list[float],
                     "ideas": [
                         {"idea": str, "embedding": list[float]},
@@ -49,12 +50,17 @@ def cluster_and_summarize(ideas):
         concatenated_ideas = " ".join([item["idea"] for item in cluster_items])
 
         # Generate summary using the LLM
-        prompt = f"Summarize the following ideas: {concatenated_ideas}"
-        summary = llm.invoke(prompt).content
+        summary_prompt = f"Summarize the following ideas: {concatenated_ideas}"
+        summary = llm.invoke(summary_prompt).content
+
+        # Generate a short title using the LLM (max 5 words)
+        title_prompt = f"Create a very short title (maximum 5 words) for the following cluster of ideas: {concatenated_ideas}. Return only the title, nothing else."
+        title = llm.invoke(title_prompt).content.strip()
 
         summary_embedding = model.encode([summary])[0]
 
         result.append({
+            "title": title,
             "summary": summary,
             "embedding": summary_embedding,
             "ideas": cluster_items

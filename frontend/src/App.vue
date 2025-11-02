@@ -5,7 +5,14 @@
     </div>
     <div class="app-row">
       <div :class="['graph-viewer-wrapper', { expanded: !chatOpen }]">
-        <GraphView :graphData="graphData" :chatOpen="chatOpen" :hideGraph="graphWhiteout" :overlayColor="backgroundColor" />
+        <GraphView 
+          :graphData="graphData" 
+          :chatOpen="chatOpen" 
+          :hideGraph="graphWhiteout" 
+          :overlayColor="backgroundColor"
+          :isLoading="isLoading"
+          :progressMessage="progressMessage"
+        />
       </div>
       <div :class="['chat-view-wrapper', { closed: !chatOpen }]">
         <ChatView :messages="messages" @send="handleSend" />
@@ -18,7 +25,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 
 import ChatView from './components/ChatView.vue';
 import GraphView from './components/GraphView.vue';
@@ -34,6 +41,28 @@ const backgroundColor = '#faf9f6';
 const backend = useBackendService();
 const messages = backend.messages;
 const graphData = backend.graphData;
+
+// Convert computed refs to reactive refs that can be passed as props
+// Since backend.isLoading and backend.progressMessage are computed, we need to track their values
+const isLoading = ref(false);
+const progressMessage = ref('');
+
+// Watch the computed values and update our refs
+watch(() => backend.isLoading, (newVal) => {
+  isLoading.value = Boolean(newVal);
+}, { immediate: true });
+
+watch(() => backend.progressMessage, (newVal) => {
+  // Ensure it's a string and not an object
+  if (typeof newVal === 'string') {
+    progressMessage.value = newVal;
+  } else if (newVal && typeof newVal === 'object') {
+    // If it's an object, try to extract a message property or convert safely
+    progressMessage.value = newVal.message || newVal.text || '';
+  } else {
+    progressMessage.value = String(newVal || '');
+  }
+}, { immediate: true });
 
 function toggleChat() {
   // Fade the graph viewer

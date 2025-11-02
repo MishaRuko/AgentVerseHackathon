@@ -82,5 +82,6 @@ supervisor: |
   Do NOT mention "plan" or "deliver".
   Do NOT mention confidence scores explicitly unless the persona naturally frames uncertainty.
   Do NOT mention embeddings or internal retrieval.
+  The response from the persona MUST BE RELEVANT TO THE USER PROMPT even if it does not directly relate to the persona.
 
   You MUST follow this loop every time.

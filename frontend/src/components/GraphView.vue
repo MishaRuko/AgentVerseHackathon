@@ -1,14 +1,22 @@
 <template>
   <div class="graph-view-container" ref="containerRef">
-    <div v-if="!hasGraphData" class="graph-empty-state">
+    <div v-if="!hasGraphData && !isLoadingValue" class="graph-empty-state">
       <p>Send a message about a social area you'd like to learn about to visualize the graph.</p>
     </div>
     <div v-show="hasGraphData" class="graph-visualization" ref="networkRef"></div>
     <transition name="graph-whiteout-fade">
       <div v-if="hideGraph" class="graph-whiteout-overlay" :style="{ background: overlayColor }"></div>
     </transition>
+    <transition name="loading-fade">
+      <div v-if="isLoadingValue && progressMessageValue" class="loading-overlay">
+        <div class="loading-spinner-container">
+          <div class="loading-spinner"></div>
+          <p class="loading-message">{{ progressMessageValue }}</p>
+        </div>
+      </div>
+    </transition>
     <div v-if="currentAnnotationText" class="annotation-tooltip" :style="annotationTooltipStyle">
-      <div class="annotation-content">{{ currentAnnotationText }}</div>
+      <div class="annotation-content" v-html="formattedAnnotationText"></div>
       <div v-if="selectedNodeAnnotations.length > 1" class="annotation-nav">
         <button 
           class="nav-arrow nav-arrow-left" 
@@ -38,6 +46,7 @@ import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 
 interface Node {
+  title: string;
   summary: string;
   embedding: number[];
   ideas: Array<{idea: string; embedding: number[]}>;
@@ -55,12 +64,21 @@ interface AnnotationInfo {
   nodeIndices: number[];
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   graphData: GraphData | null;
   chatOpen: boolean;
   hideGraph?: boolean;
   overlayColor?: string;
-}>();
+  isLoading?: boolean;
+  progressMessage?: string;
+}>(), {
+  isLoading: false,
+  progressMessage: '',
+});
+
+// Explicit computed values for template use
+const isLoadingValue = computed(() => props.isLoading ?? false);
+const progressMessageValue = computed(() => props.progressMessage ?? '');
 
 const containerRef = ref<HTMLElement | null>(null);
 const networkRef = ref<HTMLElement | null>(null);
@@ -79,6 +97,30 @@ const hasGraphData = computed(() => props.graphData !== null);
 const currentAnnotation = computed(() => selectedNodeAnnotations.value[currentAnnotationIndex.value] || null);
 const currentAnnotationText = computed(() => currentAnnotation.value?.text || null);
 const currentAnnotationKey = computed(() => currentAnnotation.value?.key || null);
+
+// Escape HTML special characters for safety and preserve line breaks
+function escapeHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML.replace(/\n/g, '<br>');
+}
+
+// Format annotation text with the clicked node's summary in bold at the top
+const formattedAnnotationText = computed(() => {
+  if (!currentAnnotationText.value || selectedNodeId.value === null || !props.graphData) {
+    return escapeHtml(currentAnnotationText.value || '');
+  }
+  
+  const clickedNode = props.graphData.nodes[selectedNodeId.value];
+  if (!clickedNode || !clickedNode.summary) {
+    return escapeHtml(currentAnnotationText.value);
+  }
+  
+  // Display node summary in bold, then the connection annotation
+  const escapedSummary = escapeHtml(clickedNode.summary);
+  const escapedAnnotation = escapeHtml(currentAnnotationText.value);
+  return `<div class="node-summary-header"><strong>${escapedSummary}</strong></div><div class="annotation-connection">${escapedAnnotation}</div>`;
+});
 
 // Position annotation tooltip near selected node, ensuring it stays on screen
 const annotationTooltipStyle = computed(() => {
@@ -263,7 +305,7 @@ async function buildGraph() {
   const nodes = new DataSet(
     nodesWithIdeasCount.map((node, index) => ({
       id: index,
-      label: node.summary || `Node ${index}`,
+      label: node.title || node.summary || `Node ${index}`,
       value: node.num_ideas,
       size: minSize + (node.num_ideas / maxIdeas) * (maxSize - minSize),
       font: {
@@ -587,7 +629,6 @@ onUnmounted(() => {
   color: #222;
   font-size: 0.95rem;
   line-height: 1.5;
-  white-space: pre-line;
   margin-bottom: 8px;
   overflow-y: auto;
   flex: 1;
@@ -595,6 +636,22 @@ onUnmounted(() => {
   padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: rgba(10, 186, 181, 0.4) rgba(10, 186, 181, 0.1);
+}
+
+.node-summary-header {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(10, 186, 181, 0.3);
+}
+
+.node-summary-header strong {
+  color: #0ABAB5;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.annotation-connection {
+  color: #333;
 }
 
 .annotation-content::-webkit-scrollbar {
@@ -650,5 +707,60 @@ onUnmounted(() => {
 .graph-whiteout-fade-enter-to,
 .graph-whiteout-fade-leave-from {
   opacity: 1;
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(250, 249, 246, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.loading-spinner-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid rgba(10, 186, 181, 0.2);
+  border-top-color: #0ABAB5;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-message {
+  color: #0ABAB5;
+  font-size: 1.1rem;
+  font-weight: 500;
+  text-align: center;
+  margin: 0;
+  max-width: 400px;
+}
+
+.loading-fade-enter-active,
+.loading-fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.loading-fade-enter-from,
+.loading-fade-leave-to {
+  opacity: 0;
 }
 </style>
