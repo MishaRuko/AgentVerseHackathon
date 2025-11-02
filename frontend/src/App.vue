@@ -1,14 +1,19 @@
 <template>
-  <div class="app-row">
-    <div :class="['graph-viewer-wrapper', { expanded: !chatOpen }]">
-      <GraphView :graphData="graphData" :chatOpen="chatOpen" />
+  <div class="app-container">
+    <div class="logo-overlay">
+      <img src="/logo.svg" alt="InfluX Logo" class="logo" />
     </div>
-    <div :class="['chat-view-wrapper', { closed: !chatOpen }]">
-      <ChatView :messages="messages" @send="handleSend" />
+    <div class="app-row">
+      <div :class="['graph-viewer-wrapper', { expanded: !chatOpen }]">
+        <GraphView :graphData="graphData" :chatOpen="chatOpen" :hideGraph="graphWhiteout" :overlayColor="backgroundColor" />
+      </div>
+      <div :class="['chat-view-wrapper', { closed: !chatOpen }]">
+        <ChatView :messages="messages" @send="handleSend" />
+      </div>
+      <button class="chat-toggle-btn" :class="{ closed: !chatOpen }" @click="toggleChat">
+        <i class="fa fa-chevron-right" :class="{ closed: !chatOpen }"></i>
+      </button>
     </div>
-    <button class="chat-toggle-btn" :class="{ closed: !chatOpen }" @click="toggleChat">
-      <i class="fa fa-chevron-right" :class="{ closed: !chatOpen }"></i>
-    </button>
   </div>
 </template>
 
@@ -22,6 +27,8 @@ import GraphView from './components/GraphView.vue';
 import { useBackendService } from './components/BackendService.js';
 
 const chatOpen = ref(true);
+const graphWhiteout = ref(false);
+const backgroundColor = '#faf9f6';
 
 // --- Backend Service ---
 const backend = useBackendService();
@@ -29,7 +36,14 @@ const messages = backend.messages;
 const graphData = backend.graphData;
 
 function toggleChat() {
+  // Fade the graph viewer
+  graphWhiteout.value = true;
   chatOpen.value = !chatOpen.value;
+
+  // Unfade the graph viewer
+  setTimeout(() => {
+    graphWhiteout.value = false;
+  }, 400);
 }
 
 function handleSend(msg: string) {
@@ -42,6 +56,34 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  position: relative;
+  width: 100vw;
+}
+
+.logo-overlay {
+  display: flex;
+  justify-content: center;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 100%;
+  z-index: 30;
+  padding: 18px 0;
+}
+
+.logo {
+  display: block;
+  height: 50px;
+  width: auto;
+  filter: drop-shadow(0 2px 8px rgba(10, 186, 181, 0.2));
+  pointer-events: auto;
+}
+
 .app-row {
   display: flex;
   height: 100vh;
