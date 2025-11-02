@@ -42,9 +42,9 @@ with open(os.path.join(REPO_ROOT, "marketing_strategist.yaml"), "r") as f:
     _o = yaml.safe_load(f)
     BASE_ORCHESTRATOR_PROMPT = _o["orchestrator"]
 
-# -------------------------------------------------
-# util functions same as before (infer_source_type, google_search)
-# -------------------------------------------------
+openai_model = OpenAIModel(
+    model_id="gpt-4o-mini",
+)
 
 def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
     if not url:
@@ -139,12 +139,6 @@ def google_search(query: str, num_results: int = 3) -> list:
     except Exception:
         return google_search(query, num_results)
 
-
-# -------------------------------------------------
-# Create all agents
-# -------------------------------------------------
-
-# 1. low-level workers
 _source_selector_agent_instance = Agent(
     model=openai_model,
     name="Source Selector",
@@ -169,14 +163,12 @@ _graph_rag_agent_instance = Agent(
     callback_handler=None,
 )
 
-# 2. personas
 _marketing_persona_agent_instance = build_marketing_persona_agent(openai_model)
 _finance_persona_agent_instance = build_finance_persona_agent(openai_model)
 
 marketing_persona_tool = make_marketing_persona_tool(_marketing_persona_agent_instance)
 finance_persona_tool   = make_finance_persona_tool(_finance_persona_agent_instance)
 
-# 3. tiny router LLM for persona selection
 _supervisor_router_agent_instance = Agent(
     model=openai_model,
     name="Supervisor Router",
@@ -186,8 +178,8 @@ _supervisor_router_agent_instance = Agent(
         "Input: a user query.\n"
         "Output: STRICT JSON with keys:\n"
         "{\n"
-        '  "persona_name": "marketing" | "finance",\n'
-        '  "persona_task": string   // e.g. "draft_marketing_strategy", "risk_scan", "investor_opportunity_scan"\n'
+        '  \"persona_name\": \"marketing\" | \"finance\",\n'
+        '  \"persona_task\": string   // e.g. \"draft_marketing_strategy\", \"risk_scan\", \"investor_opportunity_scan\"\n'
         "}\n\n"
         "Rules:\n"
         "- Use persona_name='marketing' for marketing/branding/growth/messaging/comms questions.\n"
@@ -200,10 +192,7 @@ _supervisor_router_agent_instance = Agent(
     callback_handler=None,
 )
 
-
-# -------------------------------------------------
-# Wrappers around tool-like behaviors
-# -------------------------------------------------
+knowledge_base = {}
 
 def run_source_selector(user_query: str) -> dict:
     raw = _source_selector_agent_instance(user_query)
@@ -228,7 +217,6 @@ def run_source_selector(user_query: str) -> dict:
 
 
 async def run_scraper(sources: dict) -> dict:
-    # sources is {"sources":[{"url":...,"type":...}, ...]}
     loop = asyncio.get_running_loop()
     ideas_list = await loop.run_in_executor(
         None,
@@ -312,12 +300,10 @@ Return ONLY a JSON object:
 
 
 def route_persona_and_task(user_query: str) -> dict:
-    """Ask the tiny router agent which persona + task to use."""
     result = _supervisor_router_agent_instance(user_query)
     try:
         routing = json.loads(str(result).strip())
     except Exception:
-        # fallback guess if it somehow fails
         routing = {
             "persona_name": "marketing",
             "persona_task": "summarize_findings_for_stakeholder"
@@ -326,13 +312,6 @@ def route_persona_and_task(user_query: str) -> dict:
 
 
 def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> dict:
-    """
-    Ask the chosen persona in PLAN mode:
-      - is KB enough?
-      - if not, what should we search?
-    Returns parsed dict like:
-      { "need_more_info": bool, "persona_task": "...", "search_hints": "..."? }
-    """
     analysis_json = json.dumps(analysis)
 
     if persona_name == "marketing":
@@ -353,7 +332,6 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
     try:
         plan = json.loads(raw)
     except Exception:
-        # if persona didn't give valid JSON, default to "we need more info"
         plan = {
             "need_more_info": True,
             "persona_task": persona_task,
@@ -363,10 +341,6 @@ def persona_plan(persona_name: str, persona_task: str, kb_size: int, analysis: d
 
 
 def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis: dict) -> str:
-    """
-    Ask the chosen persona in DELIVER mode to generate final stakeholder output.
-    Returns plain text that we show the user.
-    """
     analysis_json = json.dumps(analysis)
 
     if persona_name == "marketing":
@@ -385,66 +359,3 @@ def persona_deliver(persona_name: str, persona_task: str, kb_size: int, analysis
         )
 
     return final_resp
-
-
-# -------------------------------------------------
-# THIS is the orchestrated loop.
-# Call this from your API instead of calling an LLM supervisor.
-# -------------------------------------------------
-
-async def handle_user_query(user_query: str) -> str:
-    """
-    This is the real brain.
-
-    1. Route to persona + task.
-    2. Pull current KB using graph_rag.
-    3. Ask persona in 'plan' mode if KB is enough.
-    4. If not enough:
-        a. source_selector -> scraper -> graph_builder to enrich KB
-        b. run graph_rag again
-    5. Ask persona in 'deliver' mode for final stakeholder-facing output.
-    6. Return that final output text.
-    """
-
-    # Step 1: persona routing
-    routing = route_persona_and_task(user_query)
-    persona_name = routing["persona_name"]           # "marketing" or "finance"
-    persona_task = routing["persona_task"]           # ex. "draft_marketing_strategy"
-
-    # Step 2: current analysis from KB
-    initial_analysis = run_graph_rag(user_query)
-    kb_size_now = len(knowledge_base)
-
-    # Step 3: ask persona to plan
-    plan = persona_plan(persona_name, persona_task, kb_size_now, initial_analysis)
-
-    # Step 4: maybe enrich
-    final_analysis = initial_analysis
-    kb_size_after = kb_size_now
-
-    if plan.get("need_more_info", False):
-        search_hints = plan.get("search_hints", user_query)
-
-        # 4a. pick sources
-        sources = run_source_selector(search_hints)
-
-        # 4b. scrape -> ideas
-        ideas = await run_scraper(sources)
-
-        # 4c. update KB
-        _kb_update_info = update_graph_and_kb(ideas)
-        kb_size_after = len(knowledge_base)
-
-        # 4d. re-run graph rag with enriched KB
-        final_analysis = run_graph_rag(user_query)
-
-    # Step 5: persona deliver
-    final_output_text = persona_deliver(
-        persona_name=persona_name,
-        persona_task=persona_task,
-        kb_size=kb_size_after,
-        analysis=final_analysis
-    )
-
-    # Step 6: return final stakeholder-facing text
-    return final_output_text
