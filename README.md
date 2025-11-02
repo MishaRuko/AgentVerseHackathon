@@ -7,6 +7,7 @@ High-level pieces you will interact with:
 - backend: Python FastAPI service that runs the orchestration and exposes a single query endpoint.
 - multi-agent orchestration: `multi_agent.py` contains the core pipeline (source selection → scraping → clustering → graph RAG → persona planning/delivery).
 - frontend: a minimal Vue 3 app (in `frontend/`) that visualises graphs and can call the backend API.
+- personas: The system includes an academic, marketing, and finance persona to provide diverse analytical perspectives.
 
 This README documents how to run and develop with the current code. The `protalab/` folder has been intentionally omitted here.
 
@@ -77,7 +78,7 @@ The frontend now displays the persona of the agent responding to the query, with
 - Request flow (simplified):
   1. Client calls `/ask` with a user query.
 
-2.  `multi_agent.py` routes the query to a persona (marketing or finance) using a small supervisor agent.
+2.  `multi_agent.py` routes the query to a persona (marketing, finance, or academic) using a small supervisor agent.
 3.  The system tries a RAG lookup against the in-memory KB (`backend/graph_rag.py`).
 4.  If the KB is insufficient, the persona plan may instruct the orchestrator to generate search queries, scrape sources (via `backend/scrapers`), cluster ideas (`backend/clustering.py`), build/merge cluster graphs (`backend/graph_builder.py`) and add new embeddings to the KB.
 5.  A final RAG + persona delivery step produces the natural-language answer returned by `/ask`.
@@ -86,4 +87,3 @@ The frontend now displays the persona of the agent responding to the query, with
 - Persistence: At present the KB is in-memory only (a Python dict keyed by embedding tuples). For production use you should persist the KB and reuse FAISS indexes instead of rebuilding them on each call.
 
 - LLM calls: The code uses Strands/OpenAI agents (`strands` library). Ensure `OPENAI_API_KEY` is set and that you have the required Strands extras installed (see `backend/requirements.txt`).
-
