@@ -11,9 +11,14 @@ import re
 from urllib.parse import urlparse
 from datetime import datetime
 import asyncio
+import yaml
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Add backend directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
+from graph_rag import rag_query
 
 # This script uses the Strands Agents SDK with the "Agents as Tools" pattern.
 # Each specialist (source selector, scraper, vector DB) is implemented as a 
@@ -33,50 +38,18 @@ openai_model = OpenAIModel(
 )
 
 # ============================================
-# SYSTEM PROMPTS FOR SPECIALIST AGENTS
+# LOAD PROMPTS FROM YAML FILE
 # ============================================
 
-SOURCE_SELECTOR_PROMPT = """
-You are a search query specialist. Your job is to take a user's question and generate 3 different Google search queries that will help find comprehensive information about that topic.
+with open("agent_prompts.yaml", "r") as f:
+    prompts = yaml.safe_load(f)
+    SOURCE_SELECTOR_PROMPT = prompts["source_selector"]
+    SCRAPER_PROMPT = prompts["scraper"]
+    GRAPH_RAG_PROMPT = prompts["graph_rag"]
 
-Guidelines:
-1. Generate 3 distinct search queries that approach the topic from different angles
-2. Each query should be relevant but explore different aspects of the user's question
-3. Make queries specific and actionable for Google search
-4. Consider using different search modifiers (site:, intitle:, etc.) to get diverse results
-5. Return ONLY a JSON array (no extra text) with exactly 3 search queries:
-
-["first search query", "second search query", "third search query"]
-
-Example:
-User query: "What are people saying about AI safety?"
-Your response: ["AI safety concerns 2024", "site:reddit.com AI alignment discussion", "artificial intelligence safety research latest"]
-
-Be concise and return only valid JSON.
-"""
-
-SCRAPER_PROMPT = """
-You are a web scraping specialist. Given a list of sources (as JSON):
-1. Extract content from each source
-2. Return ONLY a JSON array (no extra text) with this format:
-[
-    {"source": "url", "text": "content...", "metadata": {"type": "..."}}
-]
-
-For this demo, simulate scraped content. Return only valid JSON.
-"""
-
-VECTOR_DB_PROMPT = """
-You are a vector database specialist. Given documents (as JSON):
-1. Process and store them in a vector database
-2. Return ONLY a JSON object (no extra text) with this format:
-{
-    "stored": <count>,
-    "ids": ["doc_0", "doc_1", ...]
-}
-
-For this demo, simulate storage. Return only valid JSON.
-"""
+with open("marketing_strategist.yaml", "r") as f:
+    prompts = yaml.safe_load(f)
+    SYSTEM_PROMPT = prompts["orchestrator"]
 
 # ============================================
 # IMPORT SPECIALISED AGENTS 
@@ -230,11 +203,11 @@ _scraper_agent_instance = Agent(
     callback_handler=None
 )
 
-_vector_db_agent_instance = Agent(
+_graph_rag_agent_instance = Agent(
     model=openai_model,
-    name="Vector Database Manager",
-    description="Stores documents in vector database",
-    system_prompt=VECTOR_DB_PROMPT,
+    name="Graph RAG Manager",
+    description="Builds knowledge base from documents and answers queries using graph RAG",
+    system_prompt=GRAPH_RAG_PROMPT,
     callback_handler=None
 )
 
@@ -345,108 +318,75 @@ async def scraper_agent(sources_json: str) -> str:
         LoI = []
         return json.dumps(LoI)
 
-@tool(description="Stores documents in a vector database and returns storage confirmation.")
-def vector_db_agent(documents_json: str) -> str:
+@tool(description="Answers queries using Graph RAG by searching a knowledge base and synthesizing answers.")
+def graph_rag_agent(kb: dict, query: str) -> str:
     """
-    Invokes the Vector Database Agent to store documents.
-    Accepts:
-      - JSON array of document dicts: {"source","text","metadata":{...}}
-      - JSON array of strings (flat list of ideas) -> will be wrapped into docs
-
-    Returns a JSON object with storage metadata.
+    Uses graph_rag.py to query a knowledge base and synthesize an answer.
+    
+    This agent:
+    1. Takes a pre-built knowledge base (dict of embedding:text pairs)
+    2. Uses rag_query() to retrieve relevant contexts via semantic search
+    3. Passes the contexts to the LLM agent to synthesize a comprehensive answer
+    
+    Args:
+        kb: Pre-built knowledge base dictionary {embedding_tuple: text_string}
+            Where embedding_tuple is a tuple of floats (from OpenAI embeddings)
+        query: User query string to answer
+    
+    Returns:
+        JSON string with answer, confidence, and retrieved contexts
     """
-    print("→ Vector DB Agent activated")
-
-    # parse input
+    print(f"→ Graph RAG Agent activated")
+    print(f"  🔍 Query: '{query}'")
+    
     try:
-        docs_input = json.loads(documents_json)
-    except Exception:
-        docs_input = []
+        if not kb or not isinstance(kb, dict):
+            return json.dumps({"error": "Knowledge base must be a non-empty dictionary"})
+        
+        print(f"  � Knowledge base size: {len(kb)} documents")
+        
+        # Retrieve relevant contexts using graph_rag
+        contexts = rag_query(kb, query, top_k=3)
+        
+        print(f"  ✓ Retrieved {len(contexts)} relevant contexts")
+        
+        # Use the agent to synthesize an answer from contexts
+        context_texts = [ctx["text"] for ctx in contexts]
+        prompt = f"""Based on the following retrieved contexts, answer the user's query.
 
-    # Normalize flat list of strings into document dicts
-    normalized_docs = []
-    if isinstance(docs_input, list):
-        for i, item in enumerate(docs_input):
-            if isinstance(item, str):
-                text = item
-                source = f"idea_{i}"
-                metadata = {
-                    "type": "idea",
-                    "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
-                    "word_count": len(text.split())
-                }
-                normalized_docs.append({
-                    "source": source,
-                    "text": text,
-                    "metadata": metadata
-                })
-            elif isinstance(item, dict):
-                # ensure required fields and sane metadata
-                src = item.get("source", f"doc_{i}")
-                text = item.get("text", str(item))
-                meta = item.get("metadata", {})
-                meta.setdefault("type", meta.get("type", "unknown"))
-                meta.setdefault("scraped_at", __import__("datetime").datetime.utcnow().isoformat() + "Z")
-                meta.setdefault("word_count", len(text.split()))
-                normalized_docs.append({
-                    "source": src,
-                    "text": text,
-                    "metadata": meta
-                })
-            else:
-                # fallback: wrap other types
-                text = str(item)
-                normalized_docs.append({
-                    "source": f"doc_{i}",
-                    "text": text,
-                    "metadata": {
-                        "type": "unknown",
-                        "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
-                        "word_count": len(text.split())
-                    }
-                })
-    else:
-        normalized_docs = []
+User Query: {query}
 
-    # Invoke the actual agent
-    prompt = f"""Please process and store the following documents in the vector database.
+Retrieved Contexts:
+{json.dumps(context_texts, indent=2)}
 
-Documents to store:
-{json.dumps(normalized_docs, indent=2)}
-
-Return ONLY a JSON object with this format:
+Provide a comprehensive answer based on these contexts. Return ONLY a JSON object with this format:
 {{
-    "stored": <count>,
-    "ids": ["id1", "id2", ...],
-    "embedding_model": "model_name",
-    "vector_dimension": 1536,
-    "index_name": "index_name"
+    "answer": "your comprehensive answer here",
+    "sources_used": <number of contexts used>,
+    "confidence": "high/medium/low"
 }}
 """
-
-    result = _vector_db_agent_instance(prompt)
-    response_text = str(result).strip()
-
-    # Try to parse as JSON, if it fails provide a deterministic fallback
-    try:
-        json.loads(response_text)
-        return response_text
-    except:
-        print("  ⚠ Agent didn't return valid JSON, using fallback storage implementation")
-        stored_ids = []
-        for i, doc in enumerate(normalized_docs):
-            doc_id = f"vec_doc_{abs(hash(doc.get('source', '')))%10000}_{i}"
-            stored_ids.append(doc_id)
-
-        fallback_result = {
-            "stored": len(normalized_docs),
-            "ids": stored_ids,
-            "embedding_model": "mock-embeddings-v1",
-            "vector_dimension": 1536,
-            "index_name": "ai_safety_documents"
-        }
-
-        return json.dumps(fallback_result)
+        
+        result = _graph_rag_agent_instance(prompt)
+        response_text = str(result).strip()
+        
+        # Try to parse as JSON
+        try:
+            answer_data = json.loads(response_text)
+            answer_data["contexts"] = contexts  # Add retrieved contexts
+            return json.dumps(answer_data)
+        except:
+            # Fallback if agent doesn't return valid JSON
+            return json.dumps({
+                "answer": response_text,
+                "contexts": contexts,
+                "sources_used": len(contexts),
+                "confidence": "medium"
+            })
+        
+    except Exception as e:
+        print(f"  ⚠ Error in Graph RAG Agent: {type(e).__name__}: {str(e)}")
+        return json.dumps({"error": str(e)})
 
 
 # ============================================
@@ -460,99 +400,12 @@ def _build_orchestrator() -> Agent:
     The orchestrator has access to three specialist agents (wrapped as tools)
     and can invoke them to complete complex workflows.
     """
-    system_prompt = """
-You are the Teacher's Assistant orchestrator that coordinates specialist agents.
-
-You have access to three specialist agents:
-1. source_selector_agent - Generates 3 Google search queries and returns top 3 results per query (9 URLs total)
-2. scraper_agent - Scrapes content from provided URLs
-3. vector_db_agent - Stores documents in a vector database
-
-When given a task, think through which agents to use and in what order.
-    """
+    system_prompt = SYSTEM_PROMPT
 
     orchestrator = Agent(
         model=openai_model,
         system_prompt=system_prompt,
-        tools=[source_selector_agent, scraper_agent, vector_db_agent],
+        tools=[source_selector_agent, scraper_agent, graph_rag_agent],
         callback_handler=None
     )
     return orchestrator
-
-
-async def process_user_query(query: str, user_id: str = "user123", session_id: str = "session456") -> str:
-    """
-    High-level workflow that uses the orchestrator to coordinate specialist agents.
-    
-    This implementation uses the "Agents as Tools" pattern where each specialist
-    agent is wrapped as a tool and invoked by the orchestrator agent.
-    """
-    orchestrator = _build_orchestrator()
-
-    print("=" * 60)
-    print("MULTI-AGENT WORKFLOW STARTED")
-    print("=" * 60)
-
-    # Step 1: Source selection
-    print("\n📋 Step 1: Selecting sources...")
-    print(f"Query: {query}")
-    tool1 = orchestrator.tool.source_selector_agent(query=query)
-    
-    # Extract the response - tool returns a dict with toolUseId, status, content
-    sources_json = tool1.get("content", [{}])[-1].get("text", "{}")
-    try:
-        sources_payload = json.loads(sources_json)
-    except Exception as e:
-        print(f"Warning: Could not parse sources JSON: {e}")
-        sources_payload = {"sources": []}
-    
-    print(f"✓ Found {len(sources_payload.get('sources', []))} sources from Google search")
-    for i, src in enumerate(sources_payload.get("sources", [])[:6], 1):  # Show first 6
-        # print(f"  {i}. {src.get('title', 'No title')}")
-        print(f"     URL: {src.get('url')}")
-        # print(f"     Query: {src.get('search_query', 'N/A')}")
-
-    # Step 2: Scraping
-    print("\n🌐 Step 2: Scraping sources...")
-    tool2 = orchestrator.tool.scraper_agent(sources_json=json.dumps(sources_payload))
-    
-    scraped_json = tool2.get("content", [{}])[-1].get("text", "[]")
-    try:
-        scraped_docs = json.loads(scraped_json)
-    except Exception as e:
-        print(f"Warning: Could not parse scraped JSON: {e}")
-        scraped_docs = []
-    
-    print(f"✓ Scraped {len(scraped_docs)} documents")
-    for doc in scraped_docs[:2]:  # Show first 2
-        # print(f"  - {doc.get('source')}")
-        # print(f"    Preview: {doc.get('text', '')[:80]}...")
-        print(doc)
-
-    # Step 3: Vector DB storage
-    # print("\n💾 Step 3: Storing in vector database...")
-    # tool3 = orchestrator.tool.vector_db_agent(documents_json=json.dumps(scraped_docs))
-    
-    # store_json = tool3.get("content", [{}])[-1].get("text", "{}")
-    # try:
-    #     store_result = json.loads(store_json)
-    # except Exception as e:
-    #     print(f"Warning: Could not parse storage JSON: {e}")
-    #     store_result = {"stored": 0, "ids": []}
-    
-    # print(f"✓ Stored {store_result.get('stored', 0)} documents")
-    # print(f"  Document IDs: {', '.join(store_result.get('ids', [])[:5])}{'...' if len(store_result.get('ids', [])) > 5 else ''}")
-
-    # print("\n" + "=" * 60)
-    # print("WORKFLOW COMPLETED SUCCESSFULLY")
-    # print("=" * 60)
-
-    return json.dumps(scraped_docs, indent=2)
-
-
-if __name__ == "__main__":
-    async def main():
-        result = await process_user_query(query="How is Liverpool FC performing in the Premier League this season?")
-        print("\nFinal Result:", result)
-
-    asyncio.run(main())

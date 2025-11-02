@@ -5,9 +5,40 @@
 ################################################
 
 import os
+import yaml
 from typing import List, Tuple, Dict, Any, Union
 
 from ..llm import llm
+
+# Load scraper prompt from YAML file
+_prompt_cache = None
+
+def _load_scraper_prompt() -> str:
+    """Load the scraper prompt from agent_prompts.yaml"""
+    global _prompt_cache
+    if _prompt_cache is not None:
+        return _prompt_cache
+    
+    # Get the path to agent_prompts.yaml (in the root directory)
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    yaml_path = os.path.join(root_dir, "agent_prompts.yaml")
+    
+    try:
+        with open(yaml_path, "r") as f:
+            prompts = yaml.safe_load(f)
+            _prompt_cache = prompts.get("scraper", "")
+            return _prompt_cache
+    except Exception as e:
+        print(f"Warning: Could not load scraper prompt from YAML: {e}")
+        # Fallback to basic prompt
+        return (
+            "You are extracting distinct ideas from text for downstream clustering.\n"
+            "Rules:\n"
+            "- Each idea should be a standalone short statement.\n"
+            "- Do not include speaker names, timestamps, or metadata.\n"
+            "- Do not number them.\n"
+            "- One idea per line.\n"
+        )
 
 # import all scrapers
 from . import general_scraper
@@ -186,24 +217,17 @@ def ideas_from_text(full_text: str) -> List[str]:
     Use the LLM to extract atomic 'ideas' from a text blob.
 
     We want short, self-contained statements that we can cluster later.
-    We'll ask the model to respond with one idea per line, no numbering,
-    no extra commentary.
+    The prompt is loaded from agent_prompts.yaml for consistency.
     """
 
     if not full_text.strip():
         return []
 
-    prompt = (
-        "You are extracting distinct ideas from text for downstream clustering.\n"
-        "Rules:\n"
-        "- Each idea should be a standalone short statement about a claim, topic, concern, trend, opinion, insight, or issue.\n"
-        "- Do not include speaker names, timestamps, or metadata.\n"
-        "- Do not number them.\n"
-        "- One idea per line.\n\n"
-        "Text:\n"
-        f"{full_text}\n\n"
-        "Now list the ideas, one per line:"
-    )
+    # Load the base prompt from YAML
+    base_prompt = _load_scraper_prompt()
+    
+    # Append the actual text to analyze
+    prompt = f"{base_prompt}\n\nText:\n{full_text}"
 
     response = llm.invoke(prompt).content
 
