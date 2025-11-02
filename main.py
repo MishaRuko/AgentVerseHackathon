@@ -6,6 +6,7 @@ from multi_agent import (
     scraper_agent,
     graph_rag_agent
 )
+from backend.clustering import cluster_and_summarize
 
 async def process_user_query(query: str, user_id: str = "user123", session_id: str = "session456") -> str:
     """
@@ -56,7 +57,10 @@ async def process_user_query(query: str, user_id: str = "user123", session_id: s
         # print(f"    Preview: {doc.get('text', '')[:80]}...")
         print(doc)
 
-    return json.dumps(scraped_docs, indent=2)
+    # Cluster the list 
+    clustered_data = cluster_and_summarize(scraped_docs)
+
+    return json.dumps(clustered_data, indent=2)
 
 
 if __name__ == "__main__":
