@@ -4,8 +4,27 @@
       <p>Send a message about a social area you'd like to learn about to visualize the graph.</p>
     </div>
     <div v-show="hasGraphData" class="graph-visualization" ref="networkRef"></div>
-    <div v-if="selectedAnnotation" class="annotation-tooltip" :style="tooltipStyle">
-      <div class="annotation-content">{{ selectedAnnotation }}</div>
+    <div v-if="currentAnnotationText" class="annotation-tooltip" :style="annotationTooltipStyle">
+      <div class="annotation-content">{{ currentAnnotationText }}</div>
+      <div v-if="selectedNodeAnnotations.length > 1" class="annotation-nav">
+        <button 
+          class="nav-arrow nav-arrow-left" 
+          @click="previousAnnotation"
+          :disabled="currentAnnotationIndex === 0"
+        >
+          <i class="fa fa-chevron-left"></i>
+        </button>
+        <div class="annotation-counter">
+          {{ currentAnnotationIndex + 1 }} / {{ selectedNodeAnnotations.length }}
+        </div>
+        <button 
+          class="nav-arrow nav-arrow-right" 
+          @click="nextAnnotation"
+          :disabled="currentAnnotationIndex === selectedNodeAnnotations.length - 1"
+        >
+          <i class="fa fa-chevron-right"></i>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -16,16 +35,21 @@ import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 
 interface Node {
-  id: number;
-  label: string;
-  num_ideas?: number;
-  summary?: string;
+  summary: string;
+  embedding: number[];
+  ideas: Array<{idea: string; embedding: number[]}>;
 }
 
 interface GraphData {
   nodes: Node[];
   annotations: Record<string, string>;
   similarity_matrix: number[][];
+}
+
+interface AnnotationInfo {
+  key: string;
+  text: string;
+  nodeIndices: number[];
 }
 
 const props = defineProps<{
@@ -36,58 +60,207 @@ const props = defineProps<{
 const containerRef = ref<HTMLElement | null>(null);
 const networkRef = ref<HTMLElement | null>(null);
 let network: Network | null = null;
-const selectedAnnotation = ref<string | null>(null);
-const tooltipStyle = ref({ top: '0px', left: '0px' });
-const mousePosition = ref({ x: 0, y: 0 });
+let edgesDataSet: DataSet | null = null;
+let annotationToEdgesMap = new Map<string, string[]>(); // annotation key -> edge IDs
+let edgeIdMap = new Map<string, string>(); // edge key (from-to) -> edge ID
+
+// State for annotation navigation
+const selectedNodeId = ref<number | null>(null);
+const selectedNodeAnnotations = ref<AnnotationInfo[]>([]);
+const currentAnnotationIndex = ref(0);
+const selectedNodePosition = ref({ x: 0, y: 0 });
 
 const hasGraphData = computed(() => props.graphData !== null);
+const currentAnnotation = computed(() => selectedNodeAnnotations.value[currentAnnotationIndex.value] || null);
+const currentAnnotationText = computed(() => currentAnnotation.value?.text || null);
+const currentAnnotationKey = computed(() => currentAnnotation.value?.key || null);
+
+// Position annotation tooltip near selected node, ensuring it stays on screen
+const annotationTooltipStyle = computed(() => {
+  const padding = 20;
+  const tooltipWidth = 300;
+  const tooltipHeight = selectedNodeAnnotations.value.length > 1 ? 200 : 150; // Slightly taller if nav buttons present
+  
+  let left = selectedNodePosition.value.x + 60;
+  let top = selectedNodePosition.value.y - 10;
+  
+  // Check if tooltip would go off right edge
+  if (left + tooltipWidth > window.innerWidth - padding) {
+    left = selectedNodePosition.value.x - tooltipWidth - 20; // Put it to the left instead
+  }
+  
+  // Check if tooltip would go off left edge
+  if (left < padding) {
+    left = padding;
+  }
+  
+  // Check if tooltip would go off bottom edge
+  if (top + tooltipHeight > window.innerHeight - padding) {
+    top = window.innerHeight - tooltipHeight - padding;
+  }
+  
+  // Check if tooltip would go off top edge
+  if (top < padding) {
+    top = padding;
+  }
+  
+  return {
+    top: `${top}px`,
+    left: `${left}px`,
+  };
+});
+
+
+function previousAnnotation() {
+  if (currentAnnotationIndex.value > 0) {
+    currentAnnotationIndex.value--;
+    updateEdgeHighlighting();
+  }
+}
+
+function nextAnnotation() {
+  if (currentAnnotationIndex.value < selectedNodeAnnotations.value.length - 1) {
+    currentAnnotationIndex.value++;
+    updateEdgeHighlighting();
+  }
+}
+
+function updateEdgeHighlighting() {
+  if (!edgesDataSet || !network || !currentAnnotationKey.value) {
+    // Reset all edges and nodes if no annotation selected
+    resetAllToNormal();
+    return;
+  }
+
+  const currentAnnotation = selectedNodeAnnotations.value[currentAnnotationIndex.value];
+  if (!currentAnnotation) return;
+
+  const currentEdges = annotationToEdgesMap.get(currentAnnotationKey.value) || [];
+  const involvedNodeIds = new Set(currentAnnotation.nodeIndices);
+  
+  // Update edges: highlight involved ones, grey out others
+  const allEdges = edgesDataSet.get();
+  allEdges.forEach((edge: any) => {
+    if (!edge.originalWidth) {
+      edge.originalWidth = edge.width;
+      edge.originalColor = { ...edge.color };
+    }
+    
+    const isInvolved = currentEdges.includes(edge.id);
+    
+    edgesDataSet.update({
+      id: edge.id,
+      width: isInvolved ? (edge.originalWidth || 2) + 3 : 1,
+      color: isInvolved ? {
+        color: 'rgba(10, 186, 181, 1)',
+        highlight: 'rgba(10, 186, 181, 1)',
+      } : {
+        color: 'rgba(150, 150, 150, 0.2)',
+        highlight: 'rgba(150, 150, 150, 0.3)',
+      },
+    });
+  });
+
+  // Update nodes: highlight involved ones, grey out others
+  const nodes = (network as any).body?.data?.nodes;
+  if (nodes) {
+    const allNodes = nodes.get();
+    allNodes.forEach((node: any) => {
+      if (!node.originalColor) {
+        node.originalColor = { ...node.color };
+      }
+      
+      const isInvolved = involvedNodeIds.has(node.id);
+      
+      nodes.update({
+        id: node.id,
+        color: isInvolved ? node.originalColor : {
+          background: '#e0e0e0',
+          border: '#b0b0b0',
+          highlight: {
+            background: '#d0d0d0',
+            border: '#909090',
+          },
+        },
+      });
+    });
+  }
+}
+
+function resetAllToNormal() {
+  if (!edgesDataSet) return;
+  
+  // Reset all edges
+  const allEdges = edgesDataSet.get();
+  allEdges.forEach((edge: any) => {
+    if (edge.originalWidth && edge.originalColor) {
+      edgesDataSet.update({
+        id: edge.id,
+        width: edge.originalWidth,
+        color: edge.originalColor,
+      });
+    }
+  });
+
+  // Reset all nodes
+  const nodes = network ? (network as any).body?.data?.nodes : null;
+  if (nodes) {
+    const allNodes = nodes.get();
+    allNodes.forEach((node: any) => {
+      if (node.originalColor) {
+        nodes.update({
+          id: node.id,
+          color: node.originalColor,
+        });
+      }
+    });
+  }
+}
 
 async function buildGraph() {
   if (!props.graphData) {
-    console.log('GraphView: No graph data');
     return;
   }
   
-  // Ensure networkRef is available
   if (!networkRef.value) {
-    console.log('GraphView: networkRef not ready, waiting...');
     await nextTick();
     await new Promise(resolve => setTimeout(resolve, 100));
     if (!networkRef.value) {
-      console.error('GraphView: networkRef still not available after waiting');
       return;
     }
   }
 
   const { nodes: rawNodes, annotations, similarity_matrix } = props.graphData;
   
-  // Validate data
   if (!Array.isArray(rawNodes) || !annotations || !Array.isArray(similarity_matrix)) {
-    console.error('Invalid graph data format', { 
-      nodesIsArray: Array.isArray(rawNodes),
-      hasAnnotations: !!annotations,
-      matrixIsArray: Array.isArray(similarity_matrix)
-    });
     return;
   }
 
-  console.log('Building graph with:', { 
-    nodeCount: rawNodes.length, 
-    annotationCount: Object.keys(annotations).length 
-  });
+  // Reset state
+  selectedNodeId.value = null;
+  selectedNodeAnnotations.value = [];
+  currentAnnotationIndex.value = 0;
+  annotationToEdgesMap.clear();
+  edgeIdMap.clear();
+  resetAllToNormal();
 
-  // Calculate max ideas for sizing
-  const maxIdeas = Math.max(...rawNodes.map(n => n.num_ideas || 1));
+  // Calculate num_ideas from ideas array length
+  const nodesWithIdeasCount = rawNodes.map((node, index) => ({
+    ...node,
+    id: index, // Use index as id since nodes array doesn't have explicit id
+    num_ideas: node.ideas ? node.ideas.length : 1,
+  }));
+  
+  const maxIdeas = Math.max(...nodesWithIdeasCount.map(n => n.num_ideas));
   const minSize = 20;
   const maxSize = 60;
 
-  // Build nodes with size proportional to ideas
   const nodes = new DataSet(
-    rawNodes.map(node => ({
-      id: node.id,
-      label: node.label || node.summary || `Node ${node.id}`,
-      value: node.num_ideas || 1,
-      size: minSize + ((node.num_ideas || 1) / maxIdeas) * (maxSize - minSize),
+    nodesWithIdeasCount.map((node, index) => ({
+      id: index,
+      label: node.summary || `Node ${index}`,
+      value: node.num_ideas,
+      size: minSize + (node.num_ideas / maxIdeas) * (maxSize - minSize),
       font: {
         size: 14,
         face: 'Inter',
@@ -105,27 +278,22 @@ async function buildGraph() {
     }))
   );
 
-  // Build edges from similarity matrix and annotations
-  // Annotations can represent groups of nodes (2+), so we create edges between all pairs in each group
   const edges: any[] = [];
   const edgeMap = new Map<string, any>();
 
-  // Only add edges that are in annotations and have similarity > 0
-  Object.keys(annotations).forEach(key => {
+  // Build edges and track which annotation each edge belongs to
+  Object.keys(annotations).forEach(annotationKey => {
     let nodeIndices: number[] = [];
     
-    // Handle both string keys like "[0, 1, 2]" and "0-1" format (from Python tuple serialization)
-    if (Array.isArray(key) || (typeof key === 'string' && key.startsWith('['))) {
-      // Array format like "[0, 1, 2]" - parse the JSON string
-      const parts = typeof key === 'string' ? JSON.parse(key) : key;
+    if (Array.isArray(annotationKey) || (typeof annotationKey === 'string' && annotationKey.startsWith('['))) {
+      const parts = typeof annotationKey === 'string' ? JSON.parse(annotationKey) : annotationKey;
       if (Array.isArray(parts) && parts.length >= 2) {
         nodeIndices = parts.map(Number);
       } else {
         return;
       }
     } else {
-      // String format like "0-1" - legacy format for pairs only
-      const parts = key.split('-').map(Number);
+      const parts = annotationKey.split('-').map(Number);
       if (parts.length >= 2) {
         nodeIndices = parts;
       } else {
@@ -133,9 +301,10 @@ async function buildGraph() {
       }
     }
     
-    const annotationText = annotations[key];
-    
-    // Create edges between all pairs of nodes in this group
+    const annotationText = annotations[annotationKey];
+    const edgeIds: string[] = [];
+
+    // Create edges between all pairs of nodes in this annotation group
     for (let i = 0; i < nodeIndices.length; i++) {
       for (let j = i + 1; j < nodeIndices.length; j++) {
         const from = nodeIndices[i];
@@ -143,32 +312,47 @@ async function buildGraph() {
         const similarity = similarity_matrix[from]?.[to] || 0;
         
         if (similarity > 0) {
-          // Calculate opacity and width based on similarity
           const opacity = Math.min(similarity, 1);
           const width = 2 + (similarity * 4);
-          
           const edgeKey = `${Math.min(from, to)}-${Math.max(from, to)}`;
+          
           if (!edgeMap.has(edgeKey)) {
-          edges.push({
-            from,
-            to,
-            value: similarity,
-            width,
-            color: {
+            const edgeId = `edge-${from}-${to}`;
+            const originalColor = {
               color: `rgba(10, 186, 181, ${opacity})`,
               highlight: 'rgba(10, 186, 181, 1)',
-            },
-            // Store annotation text but don't use title (which triggers default tooltip)
-            annotation: annotationText,
-          });
+            };
+            edges.push({
+              id: edgeId,
+              from,
+              to,
+              value: similarity,
+              width,
+              originalWidth: width,
+              originalColor: originalColor,
+              color: originalColor,
+            });
             edgeMap.set(edgeKey, true);
+            edgeIdMap.set(edgeKey, edgeId);
+            edgeIds.push(edgeId);
+          } else {
+            // Edge already exists, add to this annotation's edge list
+            const existingEdgeId = edgeIdMap.get(edgeKey);
+            if (existingEdgeId && !edgeIds.includes(existingEdgeId)) {
+              edgeIds.push(existingEdgeId);
+            }
           }
         }
       }
     }
+
+    // Store which edges belong to this annotation
+    if (edgeIds.length > 0) {
+      annotationToEdgesMap.set(annotationKey, edgeIds);
+    }
   });
 
-  const edgesDataSet = new DataSet(edges);
+  edgesDataSet = new DataSet(edges);
 
   const data = {
     nodes,
@@ -217,53 +401,74 @@ async function buildGraph() {
       dragView: true,
       tooltip: {
         delay: 0,
-        template: '', // Disable default tooltip
+        template: '',
       },
     },
   };
 
-  // Destroy existing network
   if (network) {
     network.destroy();
   }
 
-  // Create new network
   network = new Network(networkRef.value, data, options);
 
-  // Track mouse position for tooltip
-  const handleMouseMove = (event: MouseEvent) => {
-    mousePosition.value = { x: event.clientX, y: event.clientY };
-  };
-
-  // Handle edge hover for annotations - use tracked mouse position
-  network.on('hoverEdge', (params: any) => {
-    if (params.edge) {
-      const edge = edgesDataSet.get(params.edge);
-      if (edge && (edge as any).annotation) {
-        selectedAnnotation.value = (edge as any).annotation;
-        
-        // Use tracked mouse position
-        tooltipStyle.value = {
-          top: `${mousePosition.value.y - 10}px`, // Position slightly above cursor
-          left: `${mousePosition.value.x + 15}px`, // Position to the right of cursor
+  // Handle node click
+  network.on('click', (params: any) => {
+    if (params.nodes && params.nodes.length > 0) {
+      const clickedNodeId = params.nodes[0];
+      const nodePos = network!.getPositions([clickedNodeId])[clickedNodeId];
+      const canvas = networkRef.value!.querySelector('canvas');
+      
+      if (canvas && nodePos) {
+        const rect = canvas.getBoundingClientRect();
+        selectedNodePosition.value = {
+          x: nodePos.x + rect.left,
+          y: nodePos.y + rect.top,
+        };
+      } else {
+        // Fallback: use center of viewport if position not available
+        selectedNodePosition.value = {
+          x: window.innerWidth / 2,
+          y: window.innerHeight / 2,
         };
       }
+
+      // Find all annotations that contain this node
+      const nodeAnnotations: AnnotationInfo[] = [];
+      Object.keys(props.graphData!.annotations).forEach(annotationKey => {
+        let nodeIndices: number[] = [];
+        
+        if (typeof annotationKey === 'string' && annotationKey.startsWith('[')) {
+          nodeIndices = JSON.parse(annotationKey).map(Number);
+        } else if (typeof annotationKey === 'string' && annotationKey.includes('-')) {
+          nodeIndices = annotationKey.split('-').map(Number);
+        }
+        
+        if (nodeIndices.includes(clickedNodeId)) {
+          nodeAnnotations.push({
+            key: annotationKey,
+            text: props.graphData!.annotations[annotationKey],
+            nodeIndices,
+          });
+        }
+      });
+
+      selectedNodeId.value = clickedNodeId;
+      selectedNodeAnnotations.value = nodeAnnotations;
+      currentAnnotationIndex.value = 0;
+      
+      if (nodeAnnotations.length > 0) {
+        updateEdgeHighlighting();
+      }
+    } else {
+      // Clicked on empty space - deselect
+      selectedNodeId.value = null;
+      selectedNodeAnnotations.value = [];
+      currentAnnotationIndex.value = 0;
+      resetAllToNormal();
     }
   });
 
-  // Add mousemove listener to track cursor position
-  const canvas = networkRef.value!.querySelector('canvas');
-  if (canvas) {
-    canvas.addEventListener('mousemove', handleMouseMove);
-    (network as any).__mouseMoveHandler = handleMouseMove;
-    (network as any).__canvas = canvas;
-  }
-
-  network.on('blurEdge', () => {
-    selectedAnnotation.value = null;
-  });
-
-  // Handle window resize
   const handleResize = () => {
     if (network && networkRef.value) {
       network.setSize(networkRef.value.clientWidth, networkRef.value.clientHeight);
@@ -272,26 +477,18 @@ async function buildGraph() {
 
   window.addEventListener('resize', handleResize);
   
-  // Store cleanup function
   (network as any).__cleanup = () => {
     window.removeEventListener('resize', handleResize);
-    const canvas = (network as any).__canvas;
-    const mouseMoveHandler = (network as any).__mouseMoveHandler;
-    if (canvas && mouseMoveHandler) {
-      canvas.removeEventListener('mousemove', mouseMoveHandler);
-    }
   };
 }
 
 watch(() => props.graphData, async (newData) => {
   if (!newData) return;
-  // Wait for DOM to update so networkRef is available
   await nextTick();
   buildGraph();
 }, { deep: true });
 
 onMounted(async () => {
-  // Wait for initial DOM render
   await nextTick();
   buildGraph();
 });
@@ -331,6 +528,39 @@ onUnmounted(() => {
   width: 100%;
 }
 
+
+.nav-arrow {
+  background: #0ABAB5;
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.nav-arrow:hover:not(:disabled) {
+  background: #089895;
+}
+
+.nav-arrow:disabled {
+  background: #B0F0ED;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.annotation-counter {
+  font-size: 0.9rem;
+  color: #0ABAB5;
+  font-weight: 600;
+  min-width: 40px;
+  text-align: center;
+}
+
 .annotation-tooltip {
   position: fixed;
   background: #E6F8F7;
@@ -340,14 +570,27 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(31, 38, 135, 0.15);
   z-index: 10000;
   max-width: 300px;
-  pointer-events: none;
+  pointer-events: auto;
   word-wrap: break-word;
+  display: flex;
+  flex-direction: column;
 }
 
 .annotation-content {
   color: #222;
   font-size: 0.95rem;
   line-height: 1.5;
+  white-space: pre-line;
+  margin-bottom: 8px;
+}
+
+.annotation-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #0ABAB5;
 }
 </style>
-
