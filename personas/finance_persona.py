@@ -1,55 +1,49 @@
-# personas/finance_persona.py
+# personas/marketing_persona.py
 
 import json
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
+from .prompts import MARKETING_PERSONA_PROMPT
 
-from .prompts import FINANCE_PERSONA_PROMPT
-
-def build_finance_persona_agent(model: OpenAIModel) -> Agent:
-    """
-    Create and return the finance persona Agent.
-    This Agent can handle multiple 'task' modes.
-    """
+def build_marketing_persona_agent(model: OpenAIModel) -> Agent:
     return Agent(
         model=model,
-        name="Finance Persona",
-        description="Frames analysis in investor / exec terms: risk, sentiment, competitive posture.",
-        system_prompt=FINANCE_PERSONA_PROMPT,
+        name="Marketing Persona",
+        description="Marketing/growth strategist. Can plan info needs and deliver strategy.",
+        system_prompt=MARKETING_PERSONA_PROMPT,
         callback_handler=None,
     )
 
+def make_marketing_persona_tool(persona_agent: Agent):
+    @tool(description="Marketing persona. mode='plan' or 'deliver'. Helps plan enrichment and generate marketing output.")
+    def marketing_persona_agent(mode: str, persona_task: str, kb_size: int, graph_answer_json: str) -> str:
+        """
+        mode: "plan" or "deliver"
+        persona_task: ex. 'draft_marketing_strategy', 'risk_scan'
+        kb_size: current size of the knowledge base (int)
+        graph_answer_json: string from graph_rag_agent(...) with fields:
+            - answer
+            - confidence
+            - contexts
+        returns:
+          - if mode == 'plan': JSON string telling Supervisor if more info is needed
+          - if mode == 'deliver': final stakeholder-facing output text
+        """
+        # just pass the raw string; persona will read it
+        prompt = f"""
+You are operating in MODE = {mode}.
 
-def make_finance_persona_tool(persona_agent: Agent):
-    """
-    Wrap the finance persona Agent as a callable tool for the Supervisor.
+persona_task: {persona_task}
+kb_size: {kb_size}
 
-    The tool accepts:
-    - task: str (e.g. 'investor_opportunity_scan')
-    - answer_json: str (JSON string from graph_rag_agent with 'answer', etc.)
+Here is the current graph-based analysis snapshot:
+{graph_answer_json}
 
-    Returns stakeholder-facing narrative for leadership / investors.
-    """
-
-    @tool(description="Finance persona. Input: task + answer_json. Returns exec/board-facing output.")
-    def ib_persona_agent(task: str, answer_json: str) -> str:
-        try:
-            payload = json.loads(answer_json)
-        except Exception:
-            payload = { "answer": answer_json }
-
-        persona_prompt = f"""
-Task: {task}
-
-Here is the structured analysis you are working from:
-{json.dumps(payload, indent=2)}
-
-Follow your task definition from your system prompt.
-Output should be boardroom-safe executive language.
-No invented metrics. No internal tool names.
-""".strip()
-
-        resp = persona_agent(persona_prompt)
+Follow the MODE rules from your system prompt.
+If MODE is "plan", respond with a pure JSON object as a string.
+If MODE is "deliver", respond with final stakeholder-facing narrative (no JSON).
+"""
+        resp = persona_agent(prompt)
         return str(resp).strip()
 
-    return ib_persona_agent
+    return marketing_persona_agent
