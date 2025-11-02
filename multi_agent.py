@@ -2,10 +2,15 @@ from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 import json
 import asyncio
+import sys
 import os
 import requests
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
+import re
+from urllib.parse import urlparse
+from datetime import datetime
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -74,7 +79,13 @@ For this demo, simulate storage. Return only valid JSON.
 """
 
 # ============================================
-# GOOGLE SEARCH HELPER FUNCTION
+# IMPORT SPECIALISED AGENTS 
+# ============================================
+
+import backend.scrapers.scraper_agent as WebScraper
+
+# ============================================
+# GOOGLE SEARCH HELPER FUNCTIONS
 # ============================================
 
 def google_search(query: str, num_results: int = 3) -> list:
@@ -98,17 +109,22 @@ def google_search(query: str, num_results: int = 3) -> list:
             {
                 "title": f"Result 1 for '{query}'",
                 "url": f"https://example.com/result1?q={quote_plus(query)}",
-                "snippet": f"Mock search result about {query}..."
+                "snippet": f"Mock search result about {query}...",
+                "type": "general"
             },
             {
                 "title": f"Result 2 for '{query}'",
                 "url": f"https://example.com/result2?q={quote_plus(query)}",
-                "snippet": f"Additional information about {query}..."
+                "snippet": f"Additional information about {query}...",
+                "type": "general"
+
             },
             {
                 "title": f"Result 3 for '{query}'",
                 "url": f"https://example.com/result3?q={quote_plus(query)}",
-                "snippet": f"More details about {query}..."
+                "snippet": f"More details about {query}...",
+                "type": "general"
+
             }
         ][:num_results]
     
@@ -128,17 +144,70 @@ def google_search(query: str, num_results: int = 3) -> list:
         
         results = []
         for item in data.get("items", [])[:num_results]:
-            results.append({
-                "title": item.get("title", ""),
-                "url": item.get("link", ""),
-                "snippet": item.get("snippet", "")
-            })
+            title = item.get("title", "")
+            link = item.get("link", "")
+            snippet = item.get("snippet", "")
+            res = {
+                "title": title,
+                "url": link,
+                "snippet": snippet,
+                "type": infer_source_type(link, title, snippet)
+            }
+            results.append(res)
         
         return results
     except Exception as e:
         print(f"  ⚠ Google search error: {e}, using mock results")
         return google_search(query, num_results)  # Fallback to mock
 
+
+def infer_source_type(url: str, title: str = "", snippet: str = "") -> str:
+    """
+    Heuristic classifier mapping a search result to the scraper type used by
+    backend.scrapers.scraper_agent.scrape_source:
+        - "reddit_post", "reddit_sub", "twitter", "news", "general"
+    """
+    if not url:
+        return "general"
+
+    parsed = urlparse(url)
+    netloc = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    title = (title or "").lower()
+    snippet = (snippet or "").lower()
+
+    # Reddit: comment thread vs subreddit listing
+    if "reddit.com" in netloc or "redd.it" in netloc:
+        if "/comments/" in path or re.search(r"/comments/[a-z0-9]+", path):
+            return "reddit_post"
+        if re.search(r"^/r/[^/]+/?", path) or re.search(r"^/r/[^/]+/(hot|new|top)", path):
+            return "reddit_sub"
+        # fallback reddit -> treat as subreddit listing
+        return "reddit_sub"
+
+    # Twitter / X
+    if "twitter.com" in netloc or "x.com" in netloc:
+        if "/status/" in path:
+            return "twitter"
+        # if it's a profile or search, still treat as general (or add 'twitter' if desired)
+        return "twitter"
+
+    # Wikipedia / encyclopedic -> map to 'news' (your scraper expects 'news' for wiki-style)
+    if "wikipedia.org" in netloc:
+        return "news"
+
+    # Heuristics for news sites (domain or path indicators)
+    news_indicators = ["news", "article", "/articles/", "/202", "/story", "press", "opinion"]
+    if any(ind in path for ind in news_indicators) or any(ind in title or ind in snippet for ind in news_indicators):
+        return "news"
+
+    # Some known news domains - expand as needed
+    known_news_domains = {"nytimes.com", "theguardian.com", "bbc.co.uk", "cnn.com", "washingtonpost.com"}
+    if any(d in netloc for d in known_news_domains):
+        return "news"
+
+    # Fallback to general webpage
+    return "general"
 
 # ============================================
 # CREATE SPECIALIST AGENT INSTANCES
@@ -210,10 +279,7 @@ def source_selector_agent(query: str) -> str:
             for result in results:
                 all_sources.append({
                     "url": result["url"],
-                    "title": result["title"],
-                    "snippet": result["snippet"],
-                    "search_query": search_query,
-                    "type": "web"
+                    "type": result["type"]
                 })
         
         print(f"  ✓ Found {len(all_sources)} total sources")
@@ -237,9 +303,6 @@ def source_selector_agent(query: str) -> str:
             for result in results:
                 all_sources.append({
                     "url": result["url"],
-                    "title": result["title"],
-                    "snippet": result["snippet"],
-                    "search_query": search_query,
                     "type": "web"
                 })
         
@@ -247,77 +310,109 @@ def source_selector_agent(query: str) -> str:
 
 
 @tool(description="Scrapes content from provided sources and returns structured documents.")
-def scraper_agent(sources_json: str) -> str:
+async def scraper_agent(sources_json: str) -> str:
     """
-    Invokes the Web Scraper Agent to scrape content from sources.
-    This is a REAL agent that can reason about which scraping strategies to use.
+    Uses the WebScraper class to scrape content from sources.
+    Returns structured documents in JSON format.
     """
+
     print("→ Scraper Agent activated")
-    
-    # Format the prompt for the agent
-    prompt = f"""Please scrape the following sources and return the content as a JSON array.
 
-Sources to scrape:
-{sources_json}
-
-Return ONLY a JSON array of documents with this format:
-[
-    {{"source": "url", "text": "scraped content", "metadata": {{"type": "...", "scraped_at": "...", "word_count": ...}}}}
-]
-"""
-    
-    # Invoke the actual agent
-    result = _scraper_agent_instance(prompt)
-    response_text = str(result).strip()
-    
-    # Try to parse as JSON, if it fails provide a fallback
     try:
-        json.loads(response_text)
-        return response_text
-    except:
-        # Fallback only if agent didn't return valid JSON
-        print("  ⚠ Agent didn't return valid JSON, using fallback")
-        try:
-            payload = json.loads(sources_json)
-        except:
-            payload = {"sources": []}
-        
-        docs = []
-        for i, s in enumerate(payload.get("sources", [])):
-            url = s.get("url", "")
-            doc_type = s.get("type", "unknown")
-            
-            if "reddit" in url.lower():
-                text = f"[Reddit Discussion] Users are discussing AI safety concerns. Top comment: 'We need better alignment research.' Discussion includes views on AGI timelines and safety measures."
-            else:
-                text = f"[Article] This is a comprehensive article about artificial intelligence developments. The content covers recent breakthroughs, safety considerations, and expert opinions on the future of AI technology."
-            
-            docs.append({
-                "source": url,
-                "text": text,
-                "metadata": {
-                    "type": doc_type,
-                    "scraped_at": "2025-11-01T00:00:00Z",
-                    "word_count": len(text.split())
-                }
-            })
-        
-        return json.dumps(docs)
+        payload = json.loads(sources_json)
+        sources = payload.get("sources") if isinstance(payload, dict) else payload
+        sources = sources or []
+    except Exception:
+        sources = []
 
+    # ensure each source is the expected shape for scrape_and_generate_ideas:
+    # list of {"url": "...", "type": "..."}
+    # (source_selector_agent should already produce that)
+    # Call the synchronous function in a thread pool so we don't block the event loop
+    loop = asyncio.get_running_loop()
+    try:
+        LoI = await loop.run_in_executor(
+            None,
+            WebScraper.scrape_and_generate_ideas,
+            sources
+        )
+
+        print(LoI)
+        return json.dumps(LoI)
+
+    except Exception as e:
+        print(f"  ⚠ scrape failure: {e}")
+        LoI = []
+        return json.dumps(LoI)
 
 @tool(description="Stores documents in a vector database and returns storage confirmation.")
 def vector_db_agent(documents_json: str) -> str:
     """
     Invokes the Vector Database Agent to store documents.
-    This is a REAL agent that can reason about document processing and storage.
+    Accepts:
+      - JSON array of document dicts: {"source","text","metadata":{...}}
+      - JSON array of strings (flat list of ideas) -> will be wrapped into docs
+
+    Returns a JSON object with storage metadata.
     """
     print("→ Vector DB Agent activated")
-    
-    # Format the prompt for the agent
+
+    # parse input
+    try:
+        docs_input = json.loads(documents_json)
+    except Exception:
+        docs_input = []
+
+    # Normalize flat list of strings into document dicts
+    normalized_docs = []
+    if isinstance(docs_input, list):
+        for i, item in enumerate(docs_input):
+            if isinstance(item, str):
+                text = item
+                source = f"idea_{i}"
+                metadata = {
+                    "type": "idea",
+                    "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+                    "word_count": len(text.split())
+                }
+                normalized_docs.append({
+                    "source": source,
+                    "text": text,
+                    "metadata": metadata
+                })
+            elif isinstance(item, dict):
+                # ensure required fields and sane metadata
+                src = item.get("source", f"doc_{i}")
+                text = item.get("text", str(item))
+                meta = item.get("metadata", {})
+                meta.setdefault("type", meta.get("type", "unknown"))
+                meta.setdefault("scraped_at", __import__("datetime").datetime.utcnow().isoformat() + "Z")
+                meta.setdefault("word_count", len(text.split()))
+                normalized_docs.append({
+                    "source": src,
+                    "text": text,
+                    "metadata": meta
+                })
+            else:
+                # fallback: wrap other types
+                text = str(item)
+                normalized_docs.append({
+                    "source": f"doc_{i}",
+                    "text": text,
+                    "metadata": {
+                        "type": "unknown",
+                        "scraped_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+                        "word_count": len(text.split())
+                    }
+                })
+    else:
+        normalized_docs = []
+
+    # Invoke the actual agent
     prompt = f"""Please process and store the following documents in the vector database.
 
 Documents to store:
-{documents_json}
+{json.dumps(normalized_docs, indent=2)}
 
 Return ONLY a JSON object with this format:
 {{
@@ -328,37 +423,30 @@ Return ONLY a JSON object with this format:
     "index_name": "index_name"
 }}
 """
-    
-    # Invoke the actual agent
+
     result = _vector_db_agent_instance(prompt)
     response_text = str(result).strip()
-    
-    # Try to parse as JSON, if it fails provide a fallback
+
+    # Try to parse as JSON, if it fails provide a deterministic fallback
     try:
         json.loads(response_text)
         return response_text
     except:
-        # Fallback only if agent didn't return valid JSON
-        print("  ⚠ Agent didn't return valid JSON, using fallback")
-        try:
-            docs = json.loads(documents_json)
-        except:
-            docs = []
-        
+        print("  ⚠ Agent didn't return valid JSON, using fallback storage implementation")
         stored_ids = []
-        for i, doc in enumerate(docs):
-            doc_id = f"vec_doc_{hash(doc.get('source', '')) % 10000}_{i}"
+        for i, doc in enumerate(normalized_docs):
+            doc_id = f"vec_doc_{abs(hash(doc.get('source', '')))%10000}_{i}"
             stored_ids.append(doc_id)
-        
-        result = {
-            "stored": len(docs),
+
+        fallback_result = {
+            "stored": len(normalized_docs),
             "ids": stored_ids,
             "embedding_model": "mock-embeddings-v1",
             "vector_dimension": 1536,
             "index_name": "ai_safety_documents"
         }
-        
-        return json.dumps(result)
+
+        return json.dumps(fallback_result)
 
 
 # ============================================
@@ -420,9 +508,9 @@ async def process_user_query(query: str, user_id: str = "user123", session_id: s
     
     print(f"✓ Found {len(sources_payload.get('sources', []))} sources from Google search")
     for i, src in enumerate(sources_payload.get("sources", [])[:6], 1):  # Show first 6
-        print(f"  {i}. {src.get('title', 'No title')}")
+        # print(f"  {i}. {src.get('title', 'No title')}")
         print(f"     URL: {src.get('url')}")
-        print(f"     Query: {src.get('search_query', 'N/A')}")
+        # print(f"     Query: {src.get('search_query', 'N/A')}")
 
     # Step 2: Scraping
     print("\n🌐 Step 2: Scraping sources...")
@@ -437,28 +525,29 @@ async def process_user_query(query: str, user_id: str = "user123", session_id: s
     
     print(f"✓ Scraped {len(scraped_docs)} documents")
     for doc in scraped_docs[:2]:  # Show first 2
-        print(f"  - {doc.get('source')}")
-        print(f"    Preview: {doc.get('text', '')[:80]}...")
+        # print(f"  - {doc.get('source')}")
+        # print(f"    Preview: {doc.get('text', '')[:80]}...")
+        print(doc)
 
     # Step 3: Vector DB storage
-    print("\n💾 Step 3: Storing in vector database...")
-    tool3 = orchestrator.tool.vector_db_agent(documents_json=json.dumps(scraped_docs))
+    # print("\n💾 Step 3: Storing in vector database...")
+    # tool3 = orchestrator.tool.vector_db_agent(documents_json=json.dumps(scraped_docs))
     
-    store_json = tool3.get("content", [{}])[-1].get("text", "{}")
-    try:
-        store_result = json.loads(store_json)
-    except Exception as e:
-        print(f"Warning: Could not parse storage JSON: {e}")
-        store_result = {"stored": 0, "ids": []}
+    # store_json = tool3.get("content", [{}])[-1].get("text", "{}")
+    # try:
+    #     store_result = json.loads(store_json)
+    # except Exception as e:
+    #     print(f"Warning: Could not parse storage JSON: {e}")
+    #     store_result = {"stored": 0, "ids": []}
     
-    print(f"✓ Stored {store_result.get('stored', 0)} documents")
-    print(f"  Document IDs: {', '.join(store_result.get('ids', [])[:5])}{'...' if len(store_result.get('ids', [])) > 5 else ''}")
+    # print(f"✓ Stored {store_result.get('stored', 0)} documents")
+    # print(f"  Document IDs: {', '.join(store_result.get('ids', [])[:5])}{'...' if len(store_result.get('ids', [])) > 5 else ''}")
 
-    print("\n" + "=" * 60)
-    print("WORKFLOW COMPLETED SUCCESSFULLY")
-    print("=" * 60)
+    # print("\n" + "=" * 60)
+    # print("WORKFLOW COMPLETED SUCCESSFULLY")
+    # print("=" * 60)
 
-    return json.dumps(store_result, indent=2)
+    return json.dumps(scraped_docs, indent=2)
 
 
 if __name__ == "__main__":
