@@ -1,38 +1,114 @@
-# Social Trend Analyser
+# AgentVerseHackathon — Social Trend Analyser
 
-This project is a social trend analyser that collects information from various sources, clusters the data, builds a graph of trends, and provides an interface to query and visualize the data.
+This repository provides a lightweight pipeline for collecting, clustering and analysing social / news signals and producing persona-driven stakeholder outputs.
 
-## Project Structure
+High-level pieces you will interact with:
+- backend: Python FastAPI service that runs the orchestration and exposes a single query endpoint.
+- multi-agent orchestration: `multi_agent.py` contains the core pipeline (source selection → scraping → clustering → graph RAG → persona planning/delivery).
+- frontend: a minimal Vue 3 app (in `frontend/`) that visualises graphs and can call the backend API.
 
-The project is divided into two main parts: a `backend` built with Python and FastAPI, and a `frontend` built with Vue.js.
+This README documents how to run and develop with the current code. The `protalab/` folder has been intentionally omitted here.
 
-### Backend (`/backend`)
+## Quick summary of important files
 
-The backend is responsible for all the data processing, including scraping, clustering, and graph building.
+- `multi_agent.py` — central orchestration. Builds search queries, scrapes sources via `backend/scrapers`, clusters ideas with `backend/clustering.py`, builds a cluster graph via `backend/graph_builder.py`, and performs RAG lookups with `backend/graph_rag.py`. Uses Strands/OpenAI agents for LLM steps and persona generation.
+- `backend/main.py` — FastAPI app exposing POST /ask which accepts a JSON body `{ "query": "..." }` and returns `{ "answer": "..." }`.
+- `backend/graph_rag.py` — small RAG helper using FAISS + SentenceTransformers to retrieve contexts from an in-memory KB.
+- `backend/clustering.py` — HDBSCAN clustering + LLM summarization of clusters.
+- `backend/graph_builder.py` — builds graph structure and uses an LLM to create human-readable explanations for cluster groups.
+- `backend/llm.py` — LLM wrapper used by some modules (loads config from environment).
+- `backend/requirements.txt` — Python packages needed to run the backend.
+- `frontend/` — Vue 3 + Vite frontend project; see `frontend/package.json` for commands and deps.
+- `personas/` — persona prompts and helpers (marketing and finance personas used by the orchestrator).
 
-- **`main.py`**: The main entry point for the FastAPI application. It defines the API endpoints and orchestrates the different backend components.
+## Environment variables
 
-- **`/scrapers`**: This directory contains the scrapers for different data sources.
-  - `reddit_scraper.py`: Scrapes posts from a given subreddit.
-  - `news_scraper.py`: A generic scraper for news articles.
+Create a `.env` file in the repository root (or set these in your shell). Minimal useful vars:
 
-- **`/synthesis`**: This directory contains the logic for synthesizing and clustering the scraped data.
-  - `cluster.py`: Implements text embedding and clustering using sentence transformers and scikit-learn.
+- `OPENAI_API_KEY` — required for LLM calls (Strands/OpenAI usage in the project).
+- `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` — optional, used by the Google Custom Search fallback; if not set, the code returns mocked search results.
 
-- **`/graph`**: This directory contains the logic for building and analyzing the trend graph.
-  - `graph_builder.py`: Defines the graph data structure and provides methods to build and update the graph.
-  - `graph_analyser.py`: Analyzes the graph to extract insights, such as annotating clusters with keywords.
+There may be other optional variables (e.g., Strands-specific configuration) depending on your local setup — the code primarily expects `OPENAI_API_KEY` for LLM calls.
 
-- **`requirements.txt`**: Lists all the Python dependencies for the backend.
+## Backend — install and run
 
-### Frontend (`/frontend`)
+1. Create a virtual environment and install dependencies:
 
-The frontend provides a user interface to interact with the backend and visualize the data.
+```cmd
+cd backend
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-- **`index.html`**: The main HTML file for the Vue.js application. It includes the Mermaid.js library for graph visualization.
+2. From the repository root you can run the API with uvicorn (recommended during development):
 
-- **`/src`**: This directory contains the source code for the Vue.js application.
-  - `App.vue`: The main Vue component that defines the UI and handles the interaction with the backend.
-  - `main.js`: The entry point for the Vue.js application.
+```cmd
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
-- **`package.json`**: Lists the npm dependencies for the frontend.
+Or run `python main.py` which will also start uvicorn when executed directly.
+
+3. The main API endpoint is:
+
+- POST /ask — Body: `{ "query": "What's happening with product X" }` → Response: `{ "answer": "..." }`.
+
+Notes and behavior:
+- The backend keeps an in-memory `knowledge_base` while running; repeated /ask requests may cause the orchestrator to scrape and enrich the KB.
+- The orchestrator (`multi_agent.py`) uses Strands agents and the persona tooling in `personas/` to route and generate persona-specific outputs.
+
+## Frontend — install and run
+
+The frontend is a standard Vite + Vue 3 project.
+
+```cmd
+cd frontend
+npm install
+npm run dev
+```
+
+Open the dev server URL printed by Vite (usually http://localhost:5173). The frontend components use `vis-network` / `vis-data` to render graphs and call the backend `/ask` endpoint for analysis.
+
+## Development notes & how the pipeline works
+
+- Request flow (simplified):
+  1. Client calls `/ask` with a user query.
+ 2. `multi_agent.py` routes the query to a persona (marketing or finance) using a small supervisor agent.
+ 3. The system tries a RAG lookup against the in-memory KB (`backend/graph_rag.py`).
+ 4. If the KB is insufficient, the persona plan may instruct the orchestrator to generate search queries, scrape sources (via `backend/scrapers`), cluster ideas (`backend/clustering.py`), build/merge cluster graphs (`backend/graph_builder.py`) and add new embeddings to the KB.
+ 5. A final RAG + persona delivery step produces the natural-language answer returned by `/ask`.
+
+- Persistence: At present the KB is in-memory only (a Python dict keyed by embedding tuples). For production use you should persist the KB and reuse FAISS indexes instead of rebuilding them on each call.
+
+- LLM calls: The code uses Strands/OpenAI agents (`strands` library). Ensure `OPENAI_API_KEY` is set and that you have the required Strands extras installed (see `backend/requirements.txt`).
+
+## Key developer tasks / next steps you might want to take
+
+- Persist the knowledge base and avoid rebuilding FAISS indexes on every request (`backend/graph_rag.py` contains a note about this).
+- Add authentication/ratelimiting around the FastAPI endpoint.
+- Add tests for the clustering → graph pipeline (unit test cluster outputs + small graph sanity checks).
+
+## Dependencies
+
+- Backend: see `backend/requirements.txt` (includes FastAPI, uvicorn, sentence-transformers, hdbscan, faiss/pyfaiss, strands-agents, cdlib, etc.).
+- Frontend: see `frontend/package.json` (Vue 3, vis-network).
+
+## Contributing
+
+If you want to add features or fixes:
+1. Open an issue with the feature description or bug reproduction steps.
+2. Create a branch, implement changes and add tests where appropriate.
+3. Submit a PR and reference the issue.
+
+## License
+This project does not include a license file; add one if you intend to make it public.
+
+---
+
+If you'd like, I can:
+- add a small example script that hits `/ask` with a sample query,
+- add a minimal unit test for `graph_rag.py`, or
+- prepare a docker-compose file to run the backend + frontend together.
+Tell me which you'd prefer and I'll implement it.
+
