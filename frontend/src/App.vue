@@ -1,189 +1,146 @@
-<script setup>
-import { ref, watch, computed, nextTick } from 'vue';
-import axios from 'axios';
-
-const topic = ref('');
-const clusteredData = ref(null);
-const graphData = ref(null);
-const loading = ref(false);
-const error = ref(null);
-
-// Computed property to generate Mermaid graph definition
-const mermaidChart = computed(() => {
-  if (!graphData.value || !graphData.value.nodes || !graphData.value.edges) {
-    return '';
-  }
-
-  let chart = 'graph TD\n';
-
-  // Add nodes
-  for (const nodeId in graphData.value.nodes) {
-    const node = graphData.value.nodes[nodeId];
-    let label = node.attributes.label || nodeId;
-    if (node.attributes.keywords && node.attributes.keywords.length > 0) {
-      label += '\nKeywords: ' + node.attributes.keywords.join(', ');
-    }
-    chart += `    ${nodeId}["${label}"]\n`;
-  }
-
-  // Add edges
-  for (const edge of graphData.value.edges) {
-    chart += `    ${edge.source} -- "${edge.relationship} (Weight: ${edge.weight})" --> ${edge.target}\n`;
-  }
-
-  return chart;
-});
-
-// Watch for changes in graphData and re-render Mermaid chart
-watch(graphData, async (newGraphData) => {
-  if (newGraphData) {
-    await nextTick(); // Wait for DOM to update
-    if (document.getElementById('mermaid-graph')) {
-      // Clear previous graph
-      document.getElementById('mermaid-graph').innerHTML = '';
-      // Render new graph
-      mermaid.render('graphDiv', mermaidChart.value).then(({ svg, bindFunctions }) => {
-        document.getElementById('mermaid-graph').innerHTML = svg;
-        bindFunctions();
-      });
-    }
-  }
-});
-
-async function processTopic() {
-  loading.value = true;
-  error.value = null;
-  clusteredData.value = null;
-  graphData.value = null;
-  try {
-    const response = await axios.post(`http://localhost:8000/process-topic/${topic.value}`);
-    clusteredData.value = response.data.clustered_data;
-    graphData.value = response.data.graph;
-  } catch (err) {
-    error.value = 'Failed to fetch data: ' + err.message;
-    console.error(err);
-  } finally {
-    loading.value = false;
-  }
-}
-</script>
-
 <template>
-  <div id="app" class="container mx-auto p-4">
-    <h1 class="text-3xl font-bold mb-4">Social Trend Analyser</h1>
-
-    <div class="mb-4">
-      <input
-        type="text"
-        v-model="topic"
-        placeholder="Enter topic (e.g., python)"
-        class="border p-2 rounded w-full md:w-1/2 lg:w-1/3"
-      />
-      <button
-        @click="processTopic"
-        :disabled="loading"
-        class="bg-blue-500 text-white px-4 py-2 rounded ml-2 hover:bg-blue-600 disabled:opacity-50"
-      >
-        {{ loading ? 'Processing...' : 'Analyze' }}
-      </button>
+  <div class="app-row">
+    <div :class="['graph-viewer-wrapper', { expanded: !chatOpen }]">
+      <GraphView :graphData="graphData" :chatOpen="chatOpen" />
     </div>
-
-    <div v-if="error" class="text-red-500 mb-4">{{ error }}</div>
-
-    <div v-if="clusteredData" class="mb-4">
-      <h2 class="text-2xl font-semibold mb-2">Clustered Data:</h2>
-      <div v-for="item in clusteredData" :key="item.text" class="bg-gray-100 p-2 rounded mb-2">
-        <p><strong>Cluster {{ item.cluster }}</strong>: {{ item.text.substring(0, 150) }}...</p>
-      </div>
+    <div :class="['chat-view-wrapper', { closed: !chatOpen }]">
+      <ChatView :messages="messages" @send="handleSend" />
     </div>
-
-    <div v-if="graphData" class="mb-4">
-      <h2 class="text-2xl font-semibold mb-2">Graph Visualization:</h2>
-      <div id="mermaid-graph" class="mermaid bg-gray-100 p-4 rounded"></div>
-    </div>
+    <button class="chat-toggle-btn" :class="{ closed: !chatOpen }" @click="toggleChat">
+      <i class="fa fa-chevron-right" :class="{ closed: !chatOpen }"></i>
+    </button>
   </div>
 </template>
 
-<style>
-/* Basic Tailwind-like styles for demonstration */
-.container {
-  max-width: 960px;
+<script setup lang="ts">
+import { ref, onMounted } from 'vue';
+
+import ChatView from './components/ChatView.vue';
+import GraphView from './components/GraphView.vue';
+
+// @ts-expect-error: JS module, no type declarations
+import { useBackendService } from './components/BackendService.js';
+
+const chatOpen = ref(true);
+
+// --- Backend Service ---
+const backend = useBackendService();
+const messages = backend.messages;
+const graphData = backend.graphData;
+
+function toggleChat() {
+  chatOpen.value = !chatOpen.value;
 }
-.text-3xl {
-  font-size: 1.875rem; /* 30px */
-  line-height: 2.25rem; /* 36px */
+
+function handleSend(msg: string) {
+  backend.sendMessage(msg);
 }
-.font-bold {
-  font-weight: 700;
+
+onMounted(() => {
+  backend.init();
+});
+</script>
+
+<style scoped>
+.app-row {
+  display: flex;
+  height: 100vh;
+  position: relative;
+  width: 100vw;
 }
-.mb-4 {
-  margin-bottom: 1rem;
+
+.graph-viewer-wrapper {
+  flex: 2 1 0;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 0;
 }
-.text-2xl {
-  font-size: 1.5rem; /* 24px */
-  line-height: 2rem; /* 32px */
+
+.graph-viewer-wrapper::after {
+  background: linear-gradient(to left, #faf9f6, rgba(255, 255, 255, 0));
+  content: '';
+  height: 100%;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 10px;
+  z-index: 1;
 }
-.font-semibold {
-  font-weight: 600;
+
+.graph-viewer-wrapper.expanded {
+  min-width: 100%;
 }
-.mb-2 {
-  margin-bottom: 0.5rem;
+
+.chat-view-wrapper {
+  background: none;
+  flex: 1 1 0;
+  height: 100%;
+  min-height: 0;
+  min-width: 33.33%;
+  position: relative;
+  transition: all 0.4s ease;
+  z-index: 0;
 }
-.border {
-  border-width: 1px;
-  border-color: #e2e8f0;
+
+.chat-view-wrapper.closed {
+  transform: translateX(100%);
 }
-.p-2 {
-  padding: 0.5rem;
+
+.chat-slide-enter-active,
+.chat-slide-leave-active {
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.rounded {
-  border-radius: 0.25rem;
+
+.chat-slide-enter-from,
+.chat-slide-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
 }
-.w-full {
-  width: 100%;
+
+.chat-slide-enter-to,
+.chat-slide-leave-from {
+  transform: translateX(0);
+  opacity: 1;
 }
-.md\:w-1\/2 {
-  width: 50%;
+
+.chat-toggle-btn {
+  align-items: center;
+  background: #fff;
+  border-radius: 50%;
+  border: none;
+  box-shadow: 0 2px 8px 0 rgba(31, 38, 135, 0.08);
+  cursor: pointer;
+  display: flex;
+  font-size: 1.2rem;
+  height: 36px;
+  justify-content: center;
+  left: calc(66.66% + 15px);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  width: 36px;
+  z-index: 3000;
 }
-.lg\:w-1\/3 {
-  width: 33.333333%;
+
+.chat-toggle-btn:hover {
+  background: #B0F0ED;
 }
-.bg-blue-500 {
-  background-color: #3b82f6;
+
+.chat-toggle-btn.closed {
+  left: calc(100% - 46px);
 }
-.text-white {
-  color: #fff;
+
+.chat-toggle-btn i {
+  transition: transform 0.4s ease;
 }
-.px-4 {
-  padding-left: 1rem;
-  padding-right: 1rem;
-}
-.py-2 {
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-}
-.ml-2 {
-  margin-left: 0.5rem;
-}
-.hover\:bg-blue-600:hover {
-  background-color: #2563eb;
-}
-.disabled\:opacity-50:disabled {
-  opacity: 0.5;
-}
-.text-red-500 {
-  color: #ef4444;
-}
-.bg-gray-100 {
-  background-color: #f7fafc;
-}
-.bg-gray-800 {
-  background-color: #2d3748;
-}
-.overflow-auto {
-  overflow: auto;
-}
-.mt-2 {
-  margin-top: 0.5rem;
+
+.chat-toggle-btn i.closed {
+  transform: rotate(-180deg);
 }
 </style>
+
