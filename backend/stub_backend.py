@@ -14,28 +14,113 @@ async def handle_client(websocket):
                 # After graph is displayed, subsequent messages are queries about the graph
                 if not graph_sent or "social area" in message_lower:
                     # Simulate graph data response matching the structure from clustering.py and graph_builder.py
-                    # Nodes structure matches cluster_and_summarize output
-                    # Each node should have: id (index), summary, num_ideas (from ideas array length)
+                    # Nodes structure matches cluster_and_summarize output:
+                    # Each node has: summary, embedding, ideas (array of {idea: str, embedding: list[float]})
+                    # The frontend will calculate num_ideas by counting ideas.length
                     nodes = [
                         {
-                            "id": 0,
                             "summary": "Technology Innovation Trends",
-                            "num_ideas": 10
+                            "embedding": [0.1] * 384,  # Dummy embedding (not used by frontend)
+                            "ideas": [
+                                {"idea": "AI integration in software development", "embedding": [0.1] * 384},
+                                {"idea": "Cloud computing advancements", "embedding": [0.1] * 384},
+                                {"idea": "Machine learning frameworks", "embedding": [0.1] * 384},
+                                {"idea": "DevOps automation tools", "embedding": [0.1] * 384},
+                                {"idea": "Microservices architecture", "embedding": [0.1] * 384},
+                                {"idea": "Containerization technologies", "embedding": [0.1] * 384},
+                                {"idea": "API-first development", "embedding": [0.1] * 384},
+                                {"idea": "Serverless computing", "embedding": [0.1] * 384},
+                                {"idea": "Quantum computing research", "embedding": [0.1] * 384},
+                                {"idea": "Blockchain implementation", "embedding": [0.1] * 384},
+                            ]
                         },
                         {
-                            "id": 1,
                             "summary": "Climate Change Solutions",
-                            "num_ideas": 25
+                            "embedding": [0.2] * 384,
+                            "ideas": [
+                                {"idea": "Renewable energy transition", "embedding": [0.2] * 384},
+                                {"idea": "Carbon capture technologies", "embedding": [0.2] * 384},
+                                {"idea": "Electric vehicle adoption", "embedding": [0.2] * 384},
+                                {"idea": "Sustainable agriculture practices", "embedding": [0.2] * 384},
+                                {"idea": "Green building standards", "embedding": [0.2] * 384},
+                                {"idea": "Ocean cleanup initiatives", "embedding": [0.2] * 384},
+                                {"idea": "Reforestation programs", "embedding": [0.2] * 384},
+                                {"idea": "Climate policy implementation", "embedding": [0.2] * 384},
+                                {"idea": "Energy efficiency measures", "embedding": [0.2] * 384},
+                                {"idea": "Circular economy models", "embedding": [0.2] * 384},
+                                {"idea": "Carbon pricing mechanisms", "embedding": [0.2] * 384},
+                                {"idea": "Clean transportation systems", "embedding": [0.2] * 384},
+                                {"idea": "Waste reduction strategies", "embedding": [0.2] * 384},
+                                {"idea": "Renewable energy storage", "embedding": [0.2] * 384},
+                                {"idea": "Sustainable water management", "embedding": [0.2] * 384},
+                                {"idea": "Biodiversity conservation", "embedding": [0.2] * 384},
+                                {"idea": "Climate adaptation planning", "embedding": [0.2] * 384},
+                                {"idea": "Green finance initiatives", "embedding": [0.2] * 384},
+                                {"idea": "Sustainable supply chains", "embedding": [0.2] * 384},
+                                {"idea": "Community resilience building", "embedding": [0.2] * 384},
+                                {"idea": "Carbon offset programs", "embedding": [0.2] * 384},
+                                {"idea": "Eco-friendly technologies", "embedding": [0.2] * 384},
+                                {"idea": "Sustainable consumption patterns", "embedding": [0.2] * 384},
+                                {"idea": "Climate education programs", "embedding": [0.2] * 384},
+                                {"idea": "International climate cooperation", "embedding": [0.2] * 384},
+                            ]
                         },
                         {
-                            "id": 2,
                             "summary": "Healthcare Advancements",
-                            "num_ideas": 15
+                            "embedding": [0.3] * 384,
+                            "ideas": [
+                                {"idea": "Telemedicine expansion", "embedding": [0.3] * 384},
+                                {"idea": "AI diagnostics", "embedding": [0.3] * 384},
+                                {"idea": "Personalized medicine", "embedding": [0.3] * 384},
+                                {"idea": "Gene therapy breakthroughs", "embedding": [0.3] * 384},
+                                {"idea": "Preventive care programs", "embedding": [0.3] * 384},
+                                {"idea": "Mental health support", "embedding": [0.3] * 384},
+                                {"idea": "Healthcare accessibility", "embedding": [0.3] * 384},
+                                {"idea": "Medical device innovation", "embedding": [0.3] * 384},
+                                {"idea": "Public health surveillance", "embedding": [0.3] * 384},
+                                {"idea": "Drug discovery acceleration", "embedding": [0.3] * 384},
+                                {"idea": "Remote patient monitoring", "embedding": [0.3] * 384},
+                                {"idea": "Healthcare data analytics", "embedding": [0.3] * 384},
+                                {"idea": "Patient engagement tools", "embedding": [0.3] * 384},
+                                {"idea": "Healthcare cost reduction", "embedding": [0.3] * 384},
+                                {"idea": "Medical training improvements", "embedding": [0.3] * 384},
+                            ]
                         },
                         {
-                            "id": 3,
                             "summary": "Education Reform",
-                            "num_ideas": 30
+                            "embedding": [0.4] * 384,
+                            "ideas": [
+                                {"idea": "Online learning platforms", "embedding": [0.4] * 384},
+                                {"idea": "Personalized learning paths", "embedding": [0.4] * 384},
+                                {"idea": "Student-centered curriculum", "embedding": [0.4] * 384},
+                                {"idea": "Digital literacy programs", "embedding": [0.4] * 384},
+                                {"idea": "Educational equity initiatives", "embedding": [0.4] * 384},
+                                {"idea": "Teacher training programs", "embedding": [0.4] * 384},
+                                {"idea": "Project-based learning", "embedding": [0.4] * 384},
+                                {"idea": "STEM education emphasis", "embedding": [0.4] * 384},
+                                {"idea": "Accessibility in education", "embedding": [0.4] * 384},
+                                {"idea": "Education technology integration", "embedding": [0.4] * 384},
+                                {"idea": "Lifelong learning opportunities", "embedding": [0.4] * 384},
+                                {"idea": "Alternative assessment methods", "embedding": [0.4] * 384},
+                                {"idea": "Collaborative learning spaces", "embedding": [0.4] * 384},
+                                {"idea": "Critical thinking development", "embedding": [0.4] * 384},
+                                {"idea": "Global education partnerships", "embedding": [0.4] * 384},
+                                {"idea": "Early childhood education", "embedding": [0.4] * 384},
+                                {"idea": "Vocational training programs", "embedding": [0.4] * 384},
+                                {"idea": "Educational funding reform", "embedding": [0.4] * 384},
+                                {"idea": "Parent engagement strategies", "embedding": [0.4] * 384},
+                                {"idea": "Curriculum standardization", "embedding": [0.4] * 384},
+                                {"idea": "Gamification in learning", "embedding": [0.4] * 384},
+                                {"idea": "Adaptive learning systems", "embedding": [0.4] * 384},
+                                {"idea": "School infrastructure improvement", "embedding": [0.4] * 384},
+                                {"idea": "Student mental health support", "embedding": [0.4] * 384},
+                                {"idea": "Education policy updates", "embedding": [0.4] * 384},
+                                {"idea": "Multilingual education support", "embedding": [0.4] * 384},
+                                {"idea": "Community school partnerships", "embedding": [0.4] * 384},
+                                {"idea": "Student assessment reform", "embedding": [0.4] * 384},
+                                {"idea": "Educational research integration", "embedding": [0.4] * 384},
+                                {"idea": "Teacher retention strategies", "embedding": [0.4] * 384},
+                            ]
                         },
                     ]
                     
