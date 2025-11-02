@@ -23,10 +23,10 @@ This README documents how to run and develop with the current code. The `protala
 
 ## Environment variables
 
-Create a `.env` file in the repository root (or set these in your shell). Minimal useful vars:
+Create a `.env` file in the `backend` directory (or set these in your shell). Minimal useful vars:
 
 - `OPENAI_API_KEY` — required for LLM calls (Strands/OpenAI usage in the project).
-- `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` — optional, used by the Google Custom Search fallback; if not set, the code returns mocked search results.
+- `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` — **Highly recommended**. Used by the Google Custom Search. If not set, the code returns mocked search results which are not relevant to the user's query.
 
 There may be other optional variables (e.g., Strands-specific configuration) depending on your local setup — the code primarily expects `OPENAI_API_KEY` for LLM calls.
 
@@ -45,7 +45,7 @@ pip install -r requirements.txt
 
 ```cmd
 cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 Or run `python main.py` which will also start uvicorn when executed directly.
@@ -70,6 +70,8 @@ npm run dev
 
 Open the dev server URL printed by Vite (usually http://localhost:5173). The frontend components use `vis-network` / `vis-data` to render graphs and call the backend `/ask` endpoint for analysis.
 
+The frontend now displays the persona of the agent responding to the query, with different colors for each persona.
+
 ## Development notes & how the pipeline works
 
 - Request flow (simplified):
@@ -78,6 +80,7 @@ Open the dev server URL printed by Vite (usually http://localhost:5173). The fro
  3. The system tries a RAG lookup against the in-memory KB (`backend/graph_rag.py`).
  4. If the KB is insufficient, the persona plan may instruct the orchestrator to generate search queries, scrape sources (via `backend/scrapers`), cluster ideas (`backend/clustering.py`), build/merge cluster graphs (`backend/graph_builder.py`) and add new embeddings to the KB.
  5. A final RAG + persona delivery step produces the natural-language answer returned by `/ask`.
+ 6. The frontend parses the persona from the response and displays it with a unique color.
 
 - Persistence: At present the KB is in-memory only (a Python dict keyed by embedding tuples). For production use you should persist the KB and reuse FAISS indexes instead of rebuilding them on each call.
 
@@ -88,6 +91,7 @@ Open the dev server URL printed by Vite (usually http://localhost:5173). The fro
 - Persist the knowledge base and avoid rebuilding FAISS indexes on every request (`backend/graph_rag.py` contains a note about this).
 - Add authentication/ratelimiting around the FastAPI endpoint.
 - Add tests for the clustering → graph pipeline (unit test cluster outputs + small graph sanity checks).
+- Extend the persona styling in `frontend/src/components/ChatView.vue` to support more personas and colors.
 
 ## Dependencies
 
@@ -103,12 +107,3 @@ If you want to add features or fixes:
 
 ## License
 This project does not include a license file; add one if you intend to make it public.
-
----
-
-If you'd like, I can:
-- add a small example script that hits `/ask` with a sample query,
-- add a minimal unit test for `graph_rag.py`, or
-- prepare a docker-compose file to run the backend + frontend together.
-Tell me which you'd prefer and I'll implement it.
-
