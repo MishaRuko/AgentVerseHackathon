@@ -16,13 +16,15 @@ openai_model = OpenAIModel(model_id="gpt-3.5-turbo")
 agent = Agent(model=openai_model, tools=[], system_prompt="You are a helpful assistant that only generates text. You do not have access to any tools.")
 
 
-def build_cluster_graph(clustered_data):
+def build_cluster_graph(clustered_data, meaningful_similarity_threshold=0.3):
     """
     Builds a graph of clusters, finds communities using link clustering, and generates explanations for cluster groups.
 
     Args:
         clustered_data (list[dict]):
             Output from cluster_and_summarize. Output format documented in clustering.py.
+        meaningful_similarity_threshold (float):
+            Cosine similarity threshold below which connections are considered "unconnected".
 
     Returns:
         dict: A dictionary mapping combined embedding to long description for each cluster group. Includes individual clusters as well.
@@ -39,7 +41,6 @@ def build_cluster_graph(clustered_data):
     similarity_matrix = cosine_similarity(cluster_embeddings)
 
     # Force cosine similarities below a certain threshold to 0 for more meaningful connections
-    meaningful_similarity_threshold = 0.35  # This value can be tuned
     similarity_matrix[similarity_matrix < meaningful_similarity_threshold] = 0
 
     # 2. Create a NetworkX graph from the similarity matrix
@@ -54,15 +55,10 @@ def build_cluster_graph(clustered_data):
                 G.add_edge(i, j, weight=similarity_matrix[i, j])
 
     # 3. Find communities using link clustering
-    # Check if graph has edges before running community detection
-    if G.number_of_edges() == 0:
-        # No edges means clusters are too dissimilar - return empty community structure
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"   ⚠️  No edges in cluster graph (all clusters below similarity threshold). Need more diverse data.")
-        communities = type('obj', (object,), {'communities': []})()  # Mock empty communities object
-    else:
+    try:
         communities = cdlib.algorithms.hierarchical_link_community(G)
+    except ZeroDivisionError:
+        return None
 
     # Extract node communities from edge communities
     cluster_groups = []

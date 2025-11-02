@@ -98,4 +98,7 @@ if __name__ == '__main__':
 
     clustered_data = cluster_and_summarize(sample_ideas)
     embedding_to_explanation, group_to_explanation, similarity_matrix = build_cluster_graph(clustered_data)
+    from matplotlib import pyplot as plt
+    plt.matshow(similarity_matrix)
+    plt.show()
     breakpoint()
