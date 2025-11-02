@@ -20,20 +20,3 @@ body {
 * {
   box-sizing: border-box;
 }
-
-.chat-message-persona {
-  font-size: 0.8rem;
-  font-weight: 700;
-  margin-bottom: 4px;
-  color: #888;
-}
-
-.chat-message.ai .chat-message-content.persona-marketing {
-  background-color: #e0f7fa; /* A light blue for marketing */
-  color: #00796b;
-}
-
-.chat-message.ai .chat-message-content.persona-finance {
-  background-color: #e8f5e9; /* A light green for finance */
-  color: #2e7d32;
-}

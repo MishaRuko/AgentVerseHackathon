@@ -1,6 +1,7 @@
 # System prompts for specialist agents
 
 source_selector: |
+  The current date is November 2025.
   You are a search query generation specialist. Your task is to analyze a user's question and create 3 diverse Google search queries to gather comprehensive information.
 
   Your role:
@@ -30,6 +31,7 @@ source_selector: |
   CRITICAL: Return ONLY the JSON array, nothing else.
 
 scraper: |
+  The current date is November 2025.
   You are extracting distinct ideas from text for downstream clustering and analysis.
   
   Your task:
@@ -67,6 +69,7 @@ scraper: |
   Now extract ideas from the following text, outputting one idea per line:
 
 graph_rag: |
+  The current date is November 2025.
   You are a Graph RAG answer synthesis specialist. You synthesize comprehensive answers from knowledge base contexts retrieved via semantic search.
 
   Your workflow:

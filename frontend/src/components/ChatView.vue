@@ -201,15 +201,20 @@ watch(
 
 .chat-message {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .chat-message.human {
-  justify-content: flex-end;
+  align-items: flex-end;
 }
 
-.chat-message.ai {
-  justify-content: flex-start;
+.chat-message-persona {
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+  padding: 0 18px;
+  color: #555;
 }
 
 .chat-message-content {
@@ -234,6 +239,16 @@ watch(
   background: #f0f0f0;
   border-bottom-left-radius: 6px;
   color: #333;
+}
+
+.chat-message.ai .chat-message-content.persona-marketing {
+  background-color: #e0f7fa; /* A light blue for marketing */
+  color: #00796b;
+}
+
+.chat-message.ai .chat-message-content.persona-finance {
+  background-color: #e8f5e9; /* A light green for finance */
+  color: #2e7d32;
 }
 
 .chat-input-area {
@@ -317,4 +332,3 @@ watch(
   color: #fff;
 }
 </style>
-
