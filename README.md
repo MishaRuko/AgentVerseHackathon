@@ -1,5 +1,7 @@
 # AgentVerseHackathon — Social Trend Analyser
 
+[Check out the Devpost link!](https://devpost.com/software/influx-ztcyp4)
+
 This repository provides a lightweight pipeline for collecting, clustering and analysing social / news signals and producing persona-driven stakeholder outputs.
 
 High-level pieces you will interact with:
