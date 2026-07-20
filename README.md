@@ -2,6 +2,14 @@
 
 [Check out the Devpost link!](https://devpost.com/software/influx-ztcyp4)
 
+## Video
+
+[![Watch the demo](https://img.youtube.com/vi/yAQKyz0rn3k/maxresdefault.jpg)](https://www.youtube.com/watch?v=yAQKyz0rn3k)
+
+> Click the thumbnail above to watch the skit on YouTube.
+
+## Info
+
 This repository provides a lightweight pipeline for collecting, clustering and analysing social / news signals and producing persona-driven stakeholder outputs.
 
 High-level pieces you will interact with:
@@ -11,7 +19,7 @@ High-level pieces you will interact with:
 - frontend: a minimal Vue 3 app (in `frontend/`) that visualises graphs and can call the backend API.
 - personas: The system includes an academic, marketing, and finance persona to provide diverse analytical perspectives.
 
-This README documents how to run and develop with the current code. The `protalab/` folder has been intentionally omitted here.
+This README documents how to run and develop with the current code.
 
 ## Quick summary of important files
 
